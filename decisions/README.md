@@ -125,4 +125,5 @@ forces or unlocks.
 | 0075 | Feed pre-commit hook rejections back to the runner as `HookFailure`     | Accepted | 2026-07-27 |
 | 0076 | Redispatch terminal MR-state events every tick, don't cache "detected" as "delivered" | Accepted | 2026-07-27 |
 | 0077 | MR merge/close bypasses the Paused early-return                        | Accepted | 2026-07-27 |
-| 0078 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |
+| 0078 | Wire pre-commit hook rejections into `invokeForEvent` with a bounded retry loop | Accepted | 2026-07-27 |
+| 0079 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |

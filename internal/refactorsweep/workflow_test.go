@@ -231,7 +231,8 @@ type fakeGit struct {
 	ensureErr  error
 	resetErr   error
 	syncErr    error
-	commitErr  error
+	commitErr    error
+	commitErrSeq []error // optional per-call override, see Commit
 	pushErr    error
 	hasChanges *bool // nil → default true; set to a bool pointer for explicit
 	hasChErr   error
@@ -310,6 +311,12 @@ func (g *fakeGit) Commit(_ context.Context, _, msg string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.commits = append(g.commits, msg)
+	// commitErrSeq lets a test model a sequence of per-call outcomes (e.g. a
+	// hook rejection followed by success on retry). Once exhausted, falls
+	// back to commitErr for any further calls.
+	if idx := len(g.commits) - 1; idx < len(g.commitErrSeq) {
+		return g.commitErrSeq[idx]
+	}
 	return g.commitErr
 }
 
@@ -1567,6 +1574,88 @@ func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T
 	}
 	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-xyz" {
 		t.Errorf("expected ResolveDiscussion(disc-xyz); got %+v", fp.resolves)
+	}
+}
+
+// ADR-0075/ADR-0076: a commit rejected by the target repo's own pre-commit
+// hook must not pause immediately — invokeForEvent feeds the rejection back
+// to the runner as Request.HookFailure and retries the turn. Here the retry
+// succeeds, so the run should push and resolve normally, with no pause.
+func TestResume_NoteAdded_HookRejection_RetriesThenSucceeds(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	rn := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Reformatted the file."}}
+	d.withRunner(t, rn)
+	g := d.withGit(&fakeGit{
+		commitErrSeq: []error{
+			&git.HookRejectionError{Output: "gofmt: file is not formatted (payments.go)"},
+			nil,
+		},
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please fix the formatting", DiscussionID: "disc-hook"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("hook rejection cleared by retry should stay AwaitingMerge, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("Run should not be paused once the retry succeeds; PauseReason=%q", r.Object.PauseReason)
+	}
+	if len(rn.calls) != 2 {
+		t.Fatalf("want 2 runner invocations (initial + one retry), got %d", len(rn.calls))
+	}
+	if rn.calls[0].HookFailure != "" {
+		t.Errorf("first call should carry no HookFailure, got %q", rn.calls[0].HookFailure)
+	}
+	if want := "gofmt: file is not formatted (payments.go)"; rn.calls[1].HookFailure != want {
+		t.Errorf("retry call HookFailure = %q, want %q", rn.calls[1].HookFailure, want)
+	}
+	if len(g.commits) != 2 {
+		t.Errorf("want 2 Commit attempts, got %d", len(g.commits))
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("want the successful retry pushed, got %d pushes", len(g.pushes))
+	}
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-hook" {
+		t.Errorf("expected ResolveDiscussion(disc-hook); got %+v", fp.resolves)
+	}
+}
+
+// ADR-0075/ADR-0076: a hook rejection that keeps recurring past
+// maxHookRetries must fall back to the existing pause behaviour rather than
+// retrying forever.
+func TestResume_NoteAdded_HookRejection_ExceedsCap_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	rn := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Tried to fix it."}}
+	d.withRunner(t, rn)
+	hookErr := &git.HookRejectionError{Output: "secret scan: found an AWS key in config.go"}
+	d.withGit(&fakeGit{
+		commitErrSeq: []error{hookErr, hookErr, hookErr},
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please remove the secret", DiscussionID: "disc-hook-cap"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("hook rejection persisting past maxHookRetries should pause, got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "pre-commit hook") {
+		t.Errorf("PauseReason should mention the pre-commit hook; got %q", r.Object.PauseReason)
+	}
+	if want := maxHookRetries + 1; len(rn.calls) != want {
+		t.Errorf("want %d runner invocations (initial + %d retries), got %d", want, maxHookRetries, len(rn.calls))
 	}
 }
 

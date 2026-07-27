@@ -499,6 +499,60 @@ func TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges(t *testing.T) {
 	}
 }
 
+// TestExecGit_Commit_HookRejection_ReturnsHookRejectionError covers a
+// target repo whose own pre-commit hook rejects the commit (ADR-0075):
+// Commit should surface the hook's output via a *HookRejectionError rather
+// than a bare wrapped error, so callers can distinguish it from other
+// commit failures and feed the output back to the runner.
+func TestExecGit_Commit_HookRejection_ReturnsHookRejectionError(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	// A pre-commit hook that always rejects, explaining why on stdout —
+	// mirroring how e.g. gofmt/lint hooks report their complaint. Set
+	// core.hooksPath explicitly so the test is hermetic even on a machine
+	// whose global git config points hooksPath elsewhere.
+	hooksDir := filepath.Join(baseRepo, ".git", "hooks")
+	runMust(t, baseRepo, "config", "core.hooksPath", hooksDir)
+	hookPath := filepath.Join(hooksDir, "pre-commit")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\necho 'file not formatted: main.go'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/hook-reject"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+	writeFile(t, worktreeDir, "main.go", "package main\nfunc main() {}\n")
+
+	err := g.Commit(ctx, worktreeDir, "add main.go")
+	if err == nil {
+		t.Fatal("Commit: want error from rejecting hook, got nil")
+	}
+	var hookErr *HookRejectionError
+	if !errors.As(err, &hookErr) {
+		t.Fatalf("Commit: want *HookRejectionError, got %T: %v", err, err)
+	}
+	if !strings.Contains(hookErr.Output, "file not formatted: main.go") {
+		t.Errorf("HookRejectionError.Output = %q, want it to contain the hook's message", hookErr.Output)
+	}
+}
+
 // TestExecGit_HasWorkBeyondBase covers the four cases that motivate the
 // method (a porcelain-only HasChanges misses committed-but-unpushed work,
 // see ADR on the correctness check): fresh worktree → false; dirty tree →
