@@ -245,6 +245,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		Goal:         "Migrate logrus to log/slog. Preserve log levels.",
 		CommentBody:  "please also rename the LogContext type",
 		CIFailure:    "FAIL: TestSomething (panic: nil pointer)",
+		HookFailure:  "gofmt: file is not formatted (payments.go)",
 	}
 	prompt := BuildPrompt(req)
 
@@ -255,6 +256,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		"## Task", "Migrate logrus",
 		"## Reviewer feedback to address", "rename the LogContext",
 		"## CI failure to investigate", "TestSomething",
+		"## Commit rejected by pre-commit hook", "gofmt: file is not formatted",
 		"## Scope discipline", "small and narrowly scoped",
 		"## How to finish", "<syntropy-decision>",
 	} {
@@ -357,6 +359,44 @@ func TestBuildPrompt_NoComment_NoTriageGuidance(t *testing.T) {
 		prompt := BuildPrompt(req)
 		if strings.Contains(prompt, "not the Run's author") {
 			t.Errorf("no CommentBody should mean no triage guidance; req=%+v", req)
+		}
+	}
+}
+
+func TestBuildPrompt_HookFailure_AppendsRetryGuidance(t *testing.T) {
+	// ADR-0075: a commit rejected by the target repo's own pre-commit
+	// hooks is fed back to the runner so it can self-correct and retry,
+	// rather than the Run pausing for a human immediately.
+	req := runner.Request{
+		UnitID:      "svc-payments",
+		Goal:        "do the unit",
+		HookFailure: "gofmt: file is not formatted (payments.go)",
+	}
+	prompt := BuildPrompt(req)
+
+	for _, want := range []string{
+		"## Commit rejected by pre-commit hook",
+		"gofmt: file is not formatted",
+		"pre-commit hooks",
+		"--no-verify",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPrompt_NoHookFailure_NoRetryGuidance(t *testing.T) {
+	// HookFailure empty on the ordinary invocation shapes — no hook block
+	// should be rendered.
+	for _, req := range []runner.Request{
+		{Goal: "plan the next increment"},
+		{Goal: "do the unit", UnitID: "svc-payments"},
+		{Goal: "do the unit", UnitID: "svc-payments", CIFailure: "FAIL: TestSomething"},
+	} {
+		prompt := BuildPrompt(req)
+		if strings.Contains(prompt, "## Commit rejected by pre-commit hook") {
+			t.Errorf("empty HookFailure should not produce a hook-rejection header; req=%+v", req)
 		}
 	}
 }
