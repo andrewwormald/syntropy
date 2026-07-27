@@ -1394,15 +1394,24 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
 		return StatusAwaitingMerge, nil
 	case DecisionNoChange:
+		// The runner can still have edited files even though it concluded
+		// nothing shippable resulted — commit/push them first so a stray
+		// edit doesn't sit uncommitted and trip a future SyncWithBase
+		// (found live — see ADR-0074). Done/Continue above already cover
+		// themselves via their own hasWork check; this is the same safety
+		// net for the decisions that don't otherwise touch git.
+		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
 		// Runner decided nothing actionable. Don't post a comment — that
 		// would itself trigger a webhook and risk a loop.
 		return StatusAwaitingMerge, nil
 	case DecisionAsk:
+		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
 		r.Object.PauseReason = resp.Question
 		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 		return StatusPaused, nil
 	case DecisionFail:
+		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
 		r.Object.PauseReason = resp.Summary
 		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
@@ -1413,6 +1422,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// maxCIRetries times per unit. Exceeding the cap means retrying
 		// alone isn't clearing it, so pause for a human rather than loop
 		// forever.
+		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
 		if r.Object.CIRetryCounts == nil {
 			r.Object.CIRetryCounts = map[string]int{}
 		}
@@ -1691,6 +1701,30 @@ func shortRunID(runID string) string {
 // buildCommitMessage produces a commit message for a follow-up commit
 // (addressing a review comment or fixing CI). Includes the event's source
 // so the audit trail in `git log` matches the MR conversation.
+// commitStrayWork is a safety net for invokeForEvent decision paths that
+// don't otherwise touch git (NoChange/Ask/Fail/RetryCI): the runner can
+// still have edited files even after concluding nothing shippable came of
+// it — e.g. a partial edit made before deciding to ask a question, or
+// before giving up. Left uncommitted, that silently trips a future
+// SyncWithBase's uncommitted-changes guard (found live — see ADR-0074).
+// Best-effort: any error here is swallowed rather than surfaced, since it
+// must not block the decision's own pause/reply handling below — worst
+// case is the same uncommitted-changes guard firing as before this fix
+// existed, not a new failure mode.
+func (d *Deps) commitStrayWork(ctx context.Context, worktree, branch, commitMsg string) {
+	if d.Git == nil {
+		return
+	}
+	hasWork, err := d.Git.HasWorkBeyondBase(ctx, worktree, branch)
+	if err != nil || !hasWork {
+		return
+	}
+	if cErr := d.Git.Commit(ctx, worktree, commitMsg); cErr != nil && !errors.Is(cErr, git.ErrNoChanges) {
+		return
+	}
+	_ = d.Git.Push(ctx, worktree, branch)
+}
+
 func buildCommitMessage(phase Phase, unitID string, ev provider.Event, runID string) string {
 	var subject string
 	switch phase {

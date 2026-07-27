@@ -2061,6 +2061,124 @@ func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
 	}
 }
 
+// Regression (ADR-0074): a runner can edit files even when it concludes
+// DecisionAsk/Fail/NoChange/RetryCI — e.g. a partial edit made before
+// deciding to ask a question. Those decisions used to leave that work
+// permanently uncommitted, silently tripping a future SyncWithBase's
+// uncommitted-changes guard. Found live on a real run stuck on exactly
+// this after an address_comment turn returned something other than
+// Continue/Done. All four decisions must commit+push any stray work
+// first, the same safety net Continue/Done already have (ADR-0066).
+func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkBeforePausing(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionAsk,
+		Question: "Should I delete the deprecated method or just mark it //Deprecated:?",
+	}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   mr, Author: provider.User{Handle: "reviewer"},
+		Note: provider.Note{Body: "what about the deprecated method?"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("want Paused on DecisionAsk, got %v", next)
+	}
+	if len(g.commits) != 1 {
+		t.Errorf("DecisionAsk must commit any stray work before pausing; commits=%v", g.commits)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("DecisionAsk must push any stray commit before pausing; pushes=%v", g.pushes)
+	}
+}
+
+func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkBeforePausing(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionFail,
+		Summary:  "Couldn't figure out how to address this safely.",
+	}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please fix this"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("want Paused on DecisionFail, got %v", next)
+	}
+	if len(g.commits) != 1 {
+		t.Errorf("DecisionFail must commit any stray work before pausing; commits=%v", g.commits)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("DecisionFail must push any stray commit before pausing; pushes=%v", g.pushes)
+	}
+}
+
+func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWork(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "any thoughts?"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge on DecisionNoChange, got %v", next)
+	}
+	if len(g.commits) != 1 {
+		t.Errorf("DecisionNoChange must commit any stray work; commits=%v", g.commits)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("DecisionNoChange must push any stray commit; pushes=%v", g.pushes)
+	}
+	if len(fp.comments) != 0 {
+		t.Errorf("DecisionNoChange must still not post a top-level comment (webhook-loop guard); comments=%+v", fp.comments)
+	}
+}
+
+// No stray work → no-op. Confirms the safety net doesn't commit/push on
+// every turn regardless of whether the runner actually touched anything.
+func TestResume_NoteAdded_DecisionNoChange_NoStrayWork_DoesNotCommit(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(false)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "any thoughts?"},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(g.commits) != 0 {
+		t.Errorf("no stray work present, should not commit; commits=%v", g.commits)
+	}
+	if len(g.pushes) != 0 {
+		t.Errorf("no stray work present, should not push; pushes=%v", g.pushes)
+	}
+}
+
 func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
