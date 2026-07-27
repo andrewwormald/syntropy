@@ -3,7 +3,7 @@
 // ADR-0004 for the original "shell out, not the SDK" decision.
 //
 // The adapter is dumb: it composes a prompt from the runner.Request
-// fields (Goal, Worktree, UnitID, CommentBody, CIFailure), appends a
+// fields (Goal, Worktree, UnitID, CommentBody, CIFailure, HookFailure), appends a
 // decision-marker instruction, runs `claude -p --output-format json`,
 // and parses the JSON envelope for token counts and the decision marker
 // embedded in the result text. It does not interpret SkillCommand — the
@@ -265,7 +265,8 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 //  2. The body — req.Goal, taken verbatim
 //  3. Event-specific blocks (comment to address — plus the non-author
 //     triage guidance when the commenter isn't the Run's author, see
-//     ADR-0072 — and CI failure to fix)
+//     ADR-0072 — CI failure to fix, and a hook-rejected commit to fix,
+//     see ADR-0075)
 //  4. The scope-discipline reminder (always appended; flavour depends on
 //     whether req.UnitID is set — see ADR-0045)
 //  5. The decision-marker protocol instructions (always appended)
@@ -292,6 +293,9 @@ func BuildPrompt(req runner.Request) string {
 	}
 	if req.CIFailure != "" {
 		fmt.Fprintf(&b, "## CI failure to investigate\n\n```\n%s\n```\n\n", req.CIFailure)
+	}
+	if req.HookFailure != "" {
+		fmt.Fprintf(&b, "## Commit rejected by pre-commit hook\n\n```\n%s\n```\n\n%s", req.HookFailure, hookFailureGuidance)
 	}
 
 	// UnitID is only set for unit-execution invocations (see work() in
@@ -329,6 +333,19 @@ it, classify it:
   author can approve or decline it.
 
 If you are unsure which it is, treat it as solution steering and ask.
+
+`
+
+// hookFailureGuidance follows the hook-rejection block. ADR-0075: a commit
+// rejected by the target repo's own pre-commit hooks (lint, formatting,
+// secret scanning, file-size caps, etc.) is something the runner caused and
+// can usually fix itself, so this asks it to self-correct and retry rather
+// than treat the rejection as a dead end.
+const hookFailureGuidance = `Your last commit attempt in this worktree was rejected by the repo's own
+pre-commit hooks — the output above is what the hook reported. Read it,
+fix whatever it's complaining about (formatting, lint, secrets, file
+size, etc.), and commit again. Do not use ` + "`--no-verify`" + ` or any other
+way of bypassing the hook.
 
 `
 

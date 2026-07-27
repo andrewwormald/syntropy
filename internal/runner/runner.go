@@ -61,6 +61,13 @@ type Request struct {
 	CommentBody string // populated for address-comment invocations
 	CIFailure   string // populated for fix-CI invocations (last ~2KB of log)
 
+	// HookFailure is populated when this invocation is a retry after the
+	// target repo's own pre-commit hooks rejected a prior commit attempt
+	// during address_comment/fix_ci (ADR-0075). Holds the hook's rejection
+	// output so the runner can see why its commit was refused and adjust
+	// before retrying, instead of the Run pausing for a human immediately.
+	HookFailure string
+
 	// CommenterIsAuthor reports whether CommentBody came from the Run's
 	// author. When false, the prompt tells the runner to auto-implement
 	// only objective defects and route solution-steering suggestions to
