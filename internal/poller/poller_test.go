@@ -240,6 +240,94 @@ func TestPollRun_AuthRestored_DispatchesRestoredEvent(t *testing.T) {
 	}
 }
 
+// --- MR terminal-state (merged/closed) dispatch ---
+
+// mrStateProvider wraps fakeAuthProvider and returns a fixed MR state string
+// (e.g. "merged") with no error, for terminal-state redispatch tests.
+type mrStateProvider struct {
+	fakeAuthProvider
+	state string
+}
+
+func (p *mrStateProvider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
+	return p.state, nil
+}
+
+// Regression (found live on a real run stuck for over an hour): the poller
+// used to mark mrStates[mr.IID] = "merged" the instant it *detected* the
+// change, before knowing whether the workflow actually *processed* it — a
+// Run that happens to be Paused at that exact moment drops the dispatched
+// event entirely (workflow.go's "while Paused, ignore all events" guard),
+// but the poller had already cached "already told them", so no future tick
+// would ever re-check or redispatch. Terminal MR-state events must keep
+// being dispatched every tick for as long as the unit remains in InFlight —
+// only the unit actually leaving InFlight (proof the workflow processed it)
+// should stop it, and that happens naturally since ActiveRuns is re-read
+// fresh every tick.
+func TestPollRun_MRMerged_RedispatchesEveryTickWhileStillInFlight(t *testing.T) {
+	fp := &mrStateProvider{state: "merged"}
+	dr := &dispatchRecord{}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": fp},
+		Dispatcher: dr.dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	run := ActiveRun{
+		RunID:    "run-3",
+		Provider: "fake",
+		InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: 82167}},
+	}
+
+	// Simulate the unit still being in InFlight across three ticks — as it
+	// would be if resume() keeps dropping the event (e.g. Paused) rather
+	// than actually processing markUnitMerged and removing it.
+	l.pollRun(t.Context(), run)
+	l.pollRun(t.Context(), run)
+	l.pollRun(t.Context(), run)
+
+	kinds := dr.kinds()
+	if len(kinds) != 3 {
+		t.Fatalf("EventMRMerged must be redispatched every tick while the unit remains in-flight; got %d dispatches (%v)", len(kinds), kinds)
+	}
+	for _, k := range kinds {
+		if k != provider.EventMRMerged {
+			t.Errorf("expected only EventMRMerged; got %v", k)
+		}
+	}
+}
+
+// Once the unit actually leaves InFlight (the workflow processed the merge
+// and removed it, as markUnitMerged does), the next tick's ActiveRun simply
+// doesn't include it — dispatch naturally stops without needing any special
+// "already handled" bookkeeping.
+func TestPollRun_MRMerged_StopsOnceUnitLeavesInFlight(t *testing.T) {
+	fp := &mrStateProvider{state: "merged"}
+	dr := &dispatchRecord{}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": fp},
+		Dispatcher: dr.dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	withUnit := ActiveRun{
+		RunID:    "run-4",
+		Provider: "fake",
+		InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: 82167}},
+	}
+	l.pollRun(t.Context(), withUnit)
+
+	// Simulate the workflow having processed the merge and removed the
+	// unit from InFlight — the next ActiveRun snapshot no longer has it.
+	withoutUnit := ActiveRun{RunID: "run-4", Provider: "fake", InFlight: map[string]provider.MR{}}
+	l.pollRun(t.Context(), withoutUnit)
+
+	kinds := dr.kinds()
+	if len(kinds) != 1 {
+		t.Errorf("expected exactly one dispatch before the unit left InFlight; got %d (%v)", len(kinds), kinds)
+	}
+}
+
 // Verify that ErrAuthFailure is the sentinel we compare against.
 func TestIsAuthError_WrappedErrAuthFailure(t *testing.T) {
 	wrapped := errors.New("some context: " + provider.ErrAuthFailure.Error())
