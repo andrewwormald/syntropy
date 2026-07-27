@@ -398,6 +398,45 @@ func TestBuildPrompt_ScopeDisciplinePrecedesDecisionProtocol(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_UnitInvocation_ForbidsSelfPush guards against a real
+// incident: the model ran `git push --force-with-lease` itself as an ad-hoc
+// Bash command, which the target repo's own settings.json correctly denied
+// (a force-push always needs human confirmation, even under
+// --dangerously-skip-permissions) — but the model then never emitted a
+// decision marker, leaving the turn stuck. The harness, not the model,
+// owns every push.
+func TestBuildPrompt_UnitInvocation_ForbidsSelfPushAndHistoryRewrite(t *testing.T) {
+	unit := BuildPrompt(runner.Request{Goal: "do the unit", UnitID: "svc-payments"})
+	for _, want := range []string{"git push", "force-with-lease", "harness owns every push", "commit --amend", "non-fast-forward"} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("unit invocation prompt should mention %q; got:\n%s", want, unit)
+		}
+	}
+}
+
+func TestBuildPrompt_PlanningInvocation_NoSelfPushGuidance(t *testing.T) {
+	// Planning is read-only by convention — it never pushes, so the
+	// guidance (which lives in unitScopeDiscipline) shouldn't appear there.
+	planning := BuildPrompt(runner.Request{Goal: "plan the next increment"})
+	if strings.Contains(planning, "harness owns every push") {
+		t.Errorf("planning invocation should not get unit-only git-push guidance")
+	}
+}
+
+// TestBuildPrompt_DecisionProtocol_MandatesMarkerEvenWhenBlocked guards
+// against the same incident: the model hit a denied tool call mid-turn and
+// stopped with plain text asking for confirmation instead of a real
+// <syntropy-decision> marker, so ParseDecision failed and the run stuck
+// with an unhelpful raw-output dump instead of a clean Ask pause.
+func TestBuildPrompt_DecisionProtocol_MandatesMarkerEvenWhenBlocked(t *testing.T) {
+	prompt := BuildPrompt(runner.Request{Goal: "do the thing"})
+	for _, want := range []string{"mandatory on every turn", "tool call you needed gets denied"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("decision protocol should mention %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
 // --- BuildArgs tests ---
 
 func TestBuildArgs_NoModel(t *testing.T) {
@@ -613,5 +652,41 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"count=%s
 	}
 	if !strings.Contains(resp.Summary, "count=0") {
 		t.Errorf("want the subprocess to see zero nested-session env vars, got Summary=%q", resp.Summary)
+	}
+}
+
+// TestRun_NoDecisionMarker_ErrorSurfacesCleanTextNotRawJSON guards against a
+// real incident: a model response with no decision marker (e.g. it hit a
+// denied tool call mid-turn and just asked a plain-text question instead)
+// used to produce an error whose %v was the ENTIRE raw JSON envelope — cost,
+// token usage, tool-call metadata, session IDs and all — which then landed
+// verbatim in a human-facing MR/PR pause comment. The error (and the
+// Response.Summary it's paired with) must contain only the model's actual
+// natural-language text, not the surrounding JSON.
+func TestRun_NoDecisionMarker_ErrorSurfacesCleanTextNotRawJSON(t *testing.T) {
+	dir := t.TempDir()
+	fakeBinary := filepath.Join(dir, "fake-claude.sh")
+	script := `#!/bin/sh
+printf '{"type":"result","subtype":"success","is_error":false,"result":"I need your confirmation before force-pushing. OK to proceed?","total_cost_usd":0.42,"session_id":"abc-123","usage":{"input_tokens":9999}}'
+`
+	if err := os.WriteFile(fakeBinary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	r := &Runner{Binary: fakeBinary}
+	resp, err := r.Run(context.Background(), runner.Request{Goal: "test"})
+	if err == nil {
+		t.Fatal("want an error when no decision marker is present")
+	}
+	if !strings.Contains(err.Error(), "OK to proceed?") {
+		t.Errorf("error should contain the model's actual question; got: %v", err)
+	}
+	for _, leaked := range []string{"total_cost_usd", "session_id", "input_tokens", "0.42", "abc-123", "9999"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("error must not leak raw JSON envelope fields (found %q); got: %v", leaked, err)
+		}
+	}
+	if resp.Summary != "I need your confirmation before force-pushing. OK to proceed?" {
+		t.Errorf("Response.Summary should carry the clean text too, got %q", resp.Summary)
 	}
 }
