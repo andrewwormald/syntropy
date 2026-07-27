@@ -1523,6 +1523,13 @@ const providerAuthPausePrefix = "provider-auth: "
 //     in an auth-pause, stay there without posting a duplicate comment.
 //   - AuthRestored: if the Run is in an auth-pause, clear PauseReason and
 //     return to AwaitingMerge. No-op for any other pause reason.
+//
+// Since ADR-0078, the provider's do() already retries once with a
+// force-refreshed token on a 401 before returning an error at all — so by
+// the time a 401 reaches the poller (and this handler), a same-token
+// refresh has already been tried and failed. That makes this a full
+// interactive re-login case, not just a stale access token, hence the
+// wording below.
 func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	switch ev.Kind {
 	case provider.EventProviderAuthFailure:
@@ -1530,12 +1537,12 @@ func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[Agen
 			return StatusPaused, nil // already parked; skip duplicate comment
 		}
 		r.Object.PauseReason = providerAuthPausePrefix +
-			"token expired or invalid — refresh via `gh auth login` (GitHub) or `glab auth login` (GitLab) and restart the daemon"
+			"full re-login required — a force-refreshed retry still got a 401; run `gh auth login` (GitHub) or `glab auth login` (GitLab) and restart the daemon"
 		if p, ok := d.Providers[r.Object.ProviderName]; ok {
 			for _, mr := range r.Object.InFlight {
 				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-					"⚠️ Paused — the provider token has expired (HTTP 401). "+
-						"Please refresh credentials (`gh auth login` / `glab auth login`) and restart the daemon. "+
+					"⚠️ Paused — the provider token needs a full re-login (HTTP 401 persisted even after a forced refresh). "+
+						"Please re-authenticate (`gh auth login` / `glab auth login`) and restart the daemon. "+
 						"The Run will resume automatically on the next successful poll.")
 				break // one comment is enough; concurrency=1 in v1
 			}

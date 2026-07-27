@@ -1890,7 +1890,7 @@ func TestResume_MRClosed_MovesToBlacklisted(t *testing.T) {
 // silently dropped the event via the generic "while Paused, ignore
 // everything but control commands" gate — permanently stuck until a
 // human noticed and replied `/syntropy resume`, at which point there was
-// no longer any event left to re-apply the merge (ADR-0076 covers the
+// no longer any event left to re-apply the merge (ADR-0078 covers the
 // poller half of this; this is the workflow half).
 func TestResume_MRMerged_AppliesEvenWhilePaused(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})

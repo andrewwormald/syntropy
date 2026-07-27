@@ -383,7 +383,30 @@ func (p *Provider) doJSON(ctx context.Context, method, path string, in, out any)
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// do issues a request and, on a 401, retries exactly once with a freshly
+// re-resolved token before giving up (see ADR-0078). tokenSource already
+// re-resolves on every call (ADR-0063), which for GitLab means re-invoking
+// RefreshGlabToken (ADR-0065) — so simply calling doOnce a second time is
+// enough to force a fresh refresh attempt. A 401 is ambiguous: it can mean
+// glab's own access token went stale between its lazy refresh cycles, or
+// that a genuine interactive re-login is required. Only the latter should
+// reach the poller's auth-backoff/pause path, so this retry silently
+// absorbs the former case. No retry without a tokenSource: a static Token
+// can't change between attempts, so retrying would just repeat the same
+// 401 for no benefit.
 func (p *Provider) do(ctx context.Context, method, path string, in any) (*http.Response, error) {
+	resp, err := p.doOnce(ctx, method, path, in)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized || p.tokenSource == nil {
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	return p.doOnce(ctx, method, path, in)
+}
+
+func (p *Provider) doOnce(ctx context.Context, method, path string, in any) (*http.Response, error) {
 	var body io.Reader
 	if in != nil {
 		buf, err := json.Marshal(in)
