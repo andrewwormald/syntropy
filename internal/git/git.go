@@ -122,6 +122,21 @@ type Git interface {
 // against this sentinel.
 var ErrNoChanges = errors.New("git: no changes to commit")
 
+// HookRejectionError is returned by Commit when staging succeeded (there
+// was something to commit) but the `git commit` invocation itself failed —
+// in practice this is almost always the target repo's own pre-commit or
+// commit-msg hook rejecting the commit (lint, formatting, secret scanning,
+// file-size caps, etc.). Output holds the hook's raw stdout+stderr so
+// callers can feed it back to the runner as Request.HookFailure (ADR-0075)
+// instead of pausing for a human on every rejection.
+type HookRejectionError struct {
+	Output string
+}
+
+func (e *HookRejectionError) Error() string {
+	return fmt.Sprintf("git: commit rejected by pre-commit hook: %s", e.Output)
+}
+
 // ExecGit shells out to the `git` binary. The zero value is usable.
 type ExecGit struct {
 	// Author identity for commits. If empty, falls back to the daemon's
@@ -342,9 +357,19 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		return ErrNoChanges
 	}
 
+	// Run the final commit directly (rather than via run/runOut) so a
+	// rejection captures stdout as well as stderr — hook output (e.g. a
+	// gofmt diff or lint explanation) commonly goes to stdout, and
+	// runOut's error path discards it.
 	args := append(g.identityArgs(), "commit", "-m", message)
-	if err := g.run(ctx, dir, args...); err != nil {
-		return fmt.Errorf("Commit: commit: %w", err)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if err := cmd.Run(); err != nil {
+		return &HookRejectionError{Output: strings.TrimSpace(stdout.String() + "\n" + stderr.String())}
 	}
 	return nil
 }

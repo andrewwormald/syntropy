@@ -1146,6 +1146,11 @@ func (d *Deps) reactToNote(ctx context.Context, r *workflow.Run[AgentState, Agen
 //   RetryCI    → re-run the failed job(s) (ADR-0068); pause after
 //                maxCIRetries consecutive retries on the same unit
 //
+// A Done/Continue commit rejected by the target repo's own pre-commit hook
+// doesn't pause immediately: the rejection is fed back to the runner as
+// Request.HookFailure for up to maxHookRetries retried turns before falling
+// back to the pause (ADR-0075/ADR-0076).
+//
 // Git push of any code changes the runner made is deferred to the next
 // commit (alongside work()'s push). Until then, status comments are still
 // posted so the human can see what the agent decided.
@@ -1221,238 +1226,273 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		return StatusPaused, nil
 	}
 
-	resp, runErr := rn.Run(ctx, req)
-	turn := Turn{
-		Index:     len(r.Object.History),
-		UnitID:    unitID,
-		Runner:    rn.Name(),
-		Phase:     phase,
-		Summary:   resp.Summary,
-		Tokens:    resp.Tokens,
-		StartedAt: orNow(resp.StartedAt),
-		EndedAt:   orNow(resp.EndedAt),
-	}
-	if runErr != nil {
-		turn.Error = runErr.Error()
-	}
-	r.Object.History = append(r.Object.History, turn)
-	r.Object.SubagentInvocations++
-	r.Object.TotalTokens += resp.Tokens
+	// Bounded retry loop: a Done/Continue turn whose commit is rejected by
+	// the target repo's own pre-commit hook gets fed the rejection as
+	// Request.HookFailure and one more runner turn to self-correct, rather
+	// than pausing immediately for a human (ADR-0075/ADR-0076). Bounded by
+	// maxHookRetries, mirroring the DecisionRetryCI cap pattern (ADR-0069).
+	hookRetries := 0
+	for {
+		resp, runErr := rn.Run(ctx, req)
+		turn := Turn{
+			Index:     len(r.Object.History),
+			UnitID:    unitID,
+			Runner:    rn.Name(),
+			Phase:     phase,
+			Summary:   resp.Summary,
+			Tokens:    resp.Tokens,
+			StartedAt: orNow(resp.StartedAt),
+			EndedAt:   orNow(resp.EndedAt),
+		}
+		if runErr != nil {
+			turn.Error = runErr.Error()
+		}
+		r.Object.History = append(r.Object.History, turn)
+		r.Object.SubagentInvocations++
+		r.Object.TotalTokens += resp.Tokens
 
-	mr := r.Object.InFlight[unitID]
+		mr := r.Object.InFlight[unitID]
 
-	// Phrase learning: runner can return phrases it judged safe to skip
-	// next time. Appended to the per-Run YAML; capped at MaxPerRunEntries
-	// before we surface a warning (ADR-0018 §4.2).
-	if len(resp.Learnings.AddPhrases) > 0 {
-		if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
-			if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
-				if ps.OverCap() {
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `syntropy phrases promote` or trim by hand.", filter.MaxPerRunEntries))
+		// Phrase learning: runner can return phrases it judged safe to skip
+		// next time. Appended to the per-Run YAML; capped at MaxPerRunEntries
+		// before we surface a warning (ADR-0018 §4.2).
+		if len(resp.Learnings.AddPhrases) > 0 {
+			if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
+				if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
+					if ps.OverCap() {
+						_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+							fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `syntropy phrases promote` or trim by hand.", filter.MaxPerRunEntries))
+					}
 				}
 			}
 		}
-	}
 
-	if runErr != nil {
-		// Runner had an infrastructure-level error (timeout, API down).
-		// Pause so the author can investigate; we still have the MR to
-		// recover with.
-		r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-			fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/syntropy retry` to try again.", phase, runErr))
-		return StatusPaused, nil
-	}
-
-	switch resp.Decision {
-	case DecisionDone, DecisionContinue:
-		// DecisionContinue here means the same thing ADR-0045 gave it in
-		// the planned-work loop: a real partial slice was shipped, more
-		// remains. Bundling it with DecisionNoChange (as this switch used
-		// to) silently dropped that work — found live when a "/syntropy I
-		// would like tests to cover this from the beginning" instruction
-		// produced a real, passing test file that a Continue decision then
-		// left permanently uncommitted, eventually tripping SyncWithBase's
-		// uncommitted-changes guard on a later event. Commit/push exactly
-		// like Done; only the final messaging and discussion-resolution
-		// differ (see isDone below), since Continue means the reviewer's
-		// thread isn't actually settled yet.
-		isDone := resp.Decision == DecisionDone
-
-		// Did the runner change anything this turn? Compare against the
-		// unit's own pushed tip (origin/<branch>), NOT origin/<base>: the
-		// branch always has commits beyond base once the MR exists, so a
-		// base comparison would report "work" unconditionally. And
-		// HasWorkBeyondBase rather than HasChanges so a runner that
-		// commits its own work (clean tree) isn't mistaken for "nothing
-		// changed" and its commits silently never pushed.
-		branch := branchName(r.RunID, unitID)
-		hasWork, gErr := d.Git.HasWorkBeyondBase(ctx, req.Worktree, branch)
-		if gErr != nil {
-			r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
+		if runErr != nil {
+			// Runner had an infrastructure-level error (timeout, API down).
+			// Pause so the author can investigate; we still have the MR to
+			// recover with.
+			r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, gErr))
+				fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/syntropy retry` to try again.", phase, runErr))
 			return StatusPaused, nil
 		}
-		if !hasWork {
-			// Runner thought it addressed the feedback but didn't actually
-			// change anything. Note that on the MR and stay AwaitingMerge —
-			// the reviewer can clarify if needed. Resolve the thread anyway
-			// (the comment was answered, even if not via code).
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-				fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-			if discID := ev.Note.DiscussionID; discID != "" {
-				_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
-			}
-			return StatusAwaitingMerge, nil
-		}
 
-		// Commit + push the additional changes onto the existing branch.
-		commitMsg := buildCommitMessage(phase, unitID, ev, r.RunID)
-		if gErr := d.Git.Commit(ctx, req.Worktree, commitMsg); gErr != nil {
-			if !errors.Is(gErr, git.ErrNoChanges) {
-				r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
+		switch resp.Decision {
+		case DecisionDone, DecisionContinue:
+			// DecisionContinue here means the same thing ADR-0045 gave it in
+			// the planned-work loop: a real partial slice was shipped, more
+			// remains. Bundling it with DecisionNoChange (as this switch used
+			// to) silently dropped that work — found live when a "/syntropy I
+			// would like tests to cover this from the beginning" instruction
+			// produced a real, passing test file that a Continue decision then
+			// left permanently uncommitted, eventually tripping SyncWithBase's
+			// uncommitted-changes guard on a later event. Commit/push exactly
+			// like Done; only the final messaging and discussion-resolution
+			// differ (see isDone below), since Continue means the reviewer's
+			// thread isn't actually settled yet.
+			isDone := resp.Decision == DecisionDone
+
+			// Did the runner change anything this turn? Compare against the
+			// unit's own pushed tip (origin/<branch>), NOT origin/<base>: the
+			// branch always has commits beyond base once the MR exists, so a
+			// base comparison would report "work" unconditionally. And
+			// HasWorkBeyondBase rather than HasChanges so a runner that
+			// commits its own work (clean tree) isn't mistaken for "nothing
+			// changed" and its commits silently never pushed.
+			branch := branchName(r.RunID, unitID)
+			hasWork, gErr := d.Git.HasWorkBeyondBase(ctx, req.Worktree, branch)
+			if gErr != nil {
+				r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-					fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
+					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, gErr))
 				return StatusPaused, nil
 			}
-			// ErrNoChanges: nothing stageable. Either the runner committed
-			// its own work (clean tree — the unpushed commits are what
-			// HasWorkBeyondBase saw), or it left only unstageable dirt
-			// (e.g. a compiled binary Commit's filter excluded) with
-			// nothing new committed. Only the former has anything to push.
-			stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, branch)
-			if sErr != nil {
-				r.Object.PauseReason = fmt.Sprintf("git DiffShortstat error after %s: %v", phase, sErr)
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, sErr))
-				return StatusPaused, nil
-			}
-			if stat == "" {
-				// Same outcome as the !hasWork branch above: post a note,
-				// stay AwaitingMerge. Do NOT pause — the runner addressing
-				// a comment verbally (without code change) is normal.
+			if !hasWork {
+				// Runner thought it addressed the feedback but didn't actually
+				// change anything. Note that on the MR and stay AwaitingMerge —
+				// the reviewer can clarify if needed. Resolve the thread anyway
+				// (the comment was answered, even if not via code).
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-				// Best-effort resolve so the thread doesn't sit open.
 				if discID := ev.Note.DiscussionID; discID != "" {
 					_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
 				}
 				return StatusAwaitingMerge, nil
 			}
-			// Self-committed work: fall through to Push.
-		}
-		if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
-			r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
-			return StatusPaused, nil
-		}
 
-		// A pushed fix_ci fix means the runner judged this a real code
-		// problem rather than transient/infra noise (ADR-0068), so it
-		// clears the unit's DecisionRetryCI streak the same way a green
-		// pipeline does (see EventPipelineSucceeded above) — the next CI
-		// failure is a fresh issue, not a continuation of an earlier
-		// near-miss streak.
-		if phase == PhaseFixCI {
-			delete(r.Object.CIRetryCounts, unitID)
-		}
-
-		// Push landed. Resolve the originating discussion thread so the
-		// reviewer sees their comment closed automatically — only when the
-		// runner actually finished (Done). A Continue decision means the
-		// reviewer's feedback isn't fully addressed yet, so the thread
-		// stays open for whatever event continues it. Best-effort — if
-		// resolving fails (auth, deleted thread, provider stub), the
-		// resolve just doesn't happen and the reviewer closes manually.
-		if isDone {
-			if discID := ev.Note.DiscussionID; discID != "" {
-				if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
-					// Surface but don't fail — the change is pushed, that's
-					// what matters.
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-						fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
+			// Commit + push the additional changes onto the existing branch.
+			commitMsg := buildCommitMessage(phase, unitID, ev, r.RunID)
+			if gErr := d.Git.Commit(ctx, req.Worktree, commitMsg); gErr != nil {
+				var hookErr *git.HookRejectionError
+				if errors.As(gErr, &hookErr) && hookRetries < maxHookRetries {
+					// The target repo's own pre-commit hook rejected the
+					// commit — almost always something the runner itself
+					// can fix given the hook's complaint (ADR-0075). Feed
+					// it back as HookFailure and give the runner one more
+					// turn, up to maxHookRetries, before falling back to
+					// pausing for a human like any other commit failure.
+					hookRetries++
+					req.HookFailure = hookErr.Output
+					continue
 				}
+				if hookErr != nil {
+					r.Object.PauseReason = fmt.Sprintf("commit rejected by pre-commit hook %d times in a row during %s: %s", hookRetries, phase, hookErr.Output)
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("⚠️ Paused — the pre-commit hook keeps rejecting the commit after %d retries during %s:\n```\n%s\n```\nReply `/syntropy retry` after fixing.", hookRetries, phase, hookErr.Output))
+					return StatusPaused, nil
+				}
+				if !errors.Is(gErr, git.ErrNoChanges) {
+					r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
+					return StatusPaused, nil
+				}
+				// ErrNoChanges: nothing stageable. Either the runner committed
+				// its own work (clean tree — the unpushed commits are what
+				// HasWorkBeyondBase saw), or it left only unstageable dirt
+				// (e.g. a compiled binary Commit's filter excluded) with
+				// nothing new committed. Only the former has anything to push.
+				stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, branch)
+				if sErr != nil {
+					r.Object.PauseReason = fmt.Sprintf("git DiffShortstat error after %s: %v", phase, sErr)
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, sErr))
+					return StatusPaused, nil
+				}
+				if stat == "" {
+					// Same outcome as the !hasWork branch above: post a note,
+					// stay AwaitingMerge. Do NOT pause — the runner addressing
+					// a comment verbally (without code change) is normal.
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+					// Best-effort resolve so the thread doesn't sit open.
+					if discID := ev.Note.DiscussionID; discID != "" {
+						_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
+					}
+					return StatusAwaitingMerge, nil
+				}
+				// Self-committed work: fall through to Push.
 			}
-		}
-
-		// Append actual diff shortstat as a hallucination guard so reviewers
-		// can see whether the runner's summary matches what was actually pushed.
-		var addressedBody string
-		if isDone {
-			addressedBody = fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
-		} else {
-			addressedBody = fmt.Sprintf("🔄 Partial progress (%s): %s\n\nMore work is needed — comment again (or reply `/syntropy prompt <text>`) to continue.", phase, resp.Summary)
-		}
-		if d.Git != nil {
-			if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, baseBranch); sErr == nil && stat != "" {
-				addressedBody += "\n\nDiff: " + stat
-			}
-		}
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
-		return StatusAwaitingMerge, nil
-	case DecisionNoChange:
-		// The runner can still have edited files even though it concluded
-		// nothing shippable resulted — commit/push them first so a stray
-		// edit doesn't sit uncommitted and trip a future SyncWithBase
-		// (found live — see ADR-0074). Done/Continue above already cover
-		// themselves via their own hasWork check; this is the same safety
-		// net for the decisions that don't otherwise touch git.
-		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-		// Runner decided nothing actionable. Don't post a comment — that
-		// would itself trigger a webhook and risk a loop.
-		return StatusAwaitingMerge, nil
-	case DecisionAsk:
-		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-		r.Object.PauseReason = resp.Question
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
-		return StatusPaused, nil
-	case DecisionFail:
-		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-		r.Object.PauseReason = resp.Summary
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
-		return StatusPaused, nil
-	case DecisionRetryCI:
-		// Runner judged this CI failure transient/infra noise (ADR-0068) —
-		// re-run the failed job(s) without touching code, up to
-		// maxCIRetries times per unit. Exceeding the cap means retrying
-		// alone isn't clearing it, so pause for a human rather than loop
-		// forever.
-		d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-		if r.Object.CIRetryCounts == nil {
-			r.Object.CIRetryCounts = map[string]int{}
-		}
-		r.Object.CIRetryCounts[unitID]++
-		count := r.Object.CIRetryCounts[unitID]
-		if count > maxCIRetries {
-			r.Object.PauseReason = fmt.Sprintf("CI failure retried %d times without resolving (%s): %s", maxCIRetries, phase, resp.Summary)
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-				fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, resp.Summary))
-			return StatusPaused, nil
-		}
-		for _, job := range ev.Pipeline.FailedJobs {
-			if rErr := p.RetryPipelineJob(ctx, mr.ProjectID, job.ID); rErr != nil {
-				r.Object.PauseReason = fmt.Sprintf("failed to retry CI job %d during %s: %v", job.ID, phase, rErr)
+			if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
+				r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-					fmt.Sprintf("⚠️ Paused — CI looked transient but retrying job %d failed: `%v`. Reply `/syntropy retry` after fixing.", job.ID, rErr))
+					fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
 				return StatusPaused, nil
 			}
+
+			// A pushed fix_ci fix means the runner judged this a real code
+			// problem rather than transient/infra noise (ADR-0068), so it
+			// clears the unit's DecisionRetryCI streak the same way a green
+			// pipeline does (see EventPipelineSucceeded above) — the next CI
+			// failure is a fresh issue, not a continuation of an earlier
+			// near-miss streak.
+			if phase == PhaseFixCI {
+				delete(r.Object.CIRetryCounts, unitID)
+			}
+
+			// Push landed. Resolve the originating discussion thread so the
+			// reviewer sees their comment closed automatically — only when the
+			// runner actually finished (Done). A Continue decision means the
+			// reviewer's feedback isn't fully addressed yet, so the thread
+			// stays open for whatever event continues it. Best-effort — if
+			// resolving fails (auth, deleted thread, provider stub), the
+			// resolve just doesn't happen and the reviewer closes manually.
+			if isDone {
+				if discID := ev.Note.DiscussionID; discID != "" {
+					if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
+						// Surface but don't fail — the change is pushed, that's
+						// what matters.
+						_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+							fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
+					}
+				}
+			}
+
+			// Append actual diff shortstat as a hallucination guard so reviewers
+			// can see whether the runner's summary matches what was actually pushed.
+			var addressedBody string
+			if isDone {
+				addressedBody = fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
+			} else {
+				addressedBody = fmt.Sprintf("🔄 Partial progress (%s): %s\n\nMore work is needed — comment again (or reply `/syntropy prompt <text>`) to continue.", phase, resp.Summary)
+			}
+			if d.Git != nil {
+				if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, baseBranch); sErr == nil && stat != "" {
+					addressedBody += "\n\nDiff: " + stat
+				}
+			}
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
+			return StatusAwaitingMerge, nil
+		case DecisionNoChange:
+			// The runner can still have edited files even though it concluded
+			// nothing shippable resulted — commit/push them first so a stray
+			// edit doesn't sit uncommitted and trip a future SyncWithBase
+			// (found live — see ADR-0074). Done/Continue above already cover
+			// themselves via their own hasWork check; this is the same safety
+			// net for the decisions that don't otherwise touch git.
+			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			// Runner decided nothing actionable. Don't post a comment — that
+			// would itself trigger a webhook and risk a loop.
+			return StatusAwaitingMerge, nil
+		case DecisionAsk:
+			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			r.Object.PauseReason = resp.Question
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
+			return StatusPaused, nil
+		case DecisionFail:
+			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			r.Object.PauseReason = resp.Summary
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
+			return StatusPaused, nil
+		case DecisionRetryCI:
+			// Runner judged this CI failure transient/infra noise (ADR-0068) —
+			// re-run the failed job(s) without touching code, up to
+			// maxCIRetries times per unit. Exceeding the cap means retrying
+			// alone isn't clearing it, so pause for a human rather than loop
+			// forever.
+			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			if r.Object.CIRetryCounts == nil {
+				r.Object.CIRetryCounts = map[string]int{}
+			}
+			r.Object.CIRetryCounts[unitID]++
+			count := r.Object.CIRetryCounts[unitID]
+			if count > maxCIRetries {
+				r.Object.PauseReason = fmt.Sprintf("CI failure retried %d times without resolving (%s): %s", maxCIRetries, phase, resp.Summary)
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, resp.Summary))
+				return StatusPaused, nil
+			}
+			for _, job := range ev.Pipeline.FailedJobs {
+				if rErr := p.RetryPipelineJob(ctx, mr.ProjectID, job.ID); rErr != nil {
+					r.Object.PauseReason = fmt.Sprintf("failed to retry CI job %d during %s: %v", job.ID, phase, rErr)
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("⚠️ Paused — CI looked transient but retrying job %d failed: `%v`. Reply `/syntropy retry` after fixing.", job.ID, rErr))
+					return StatusPaused, nil
+				}
+			}
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, resp.Summary))
+			return StatusAwaitingMerge, nil
 		}
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-			fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, resp.Summary))
-		return StatusAwaitingMerge, nil
+		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unhandled decision %v", resp.Decision)
 	}
-	return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unhandled decision %v", resp.Decision)
 }
 
 // maxCIRetries caps how many consecutive DecisionRetryCI outcomes
 // invokeForEvent will act on per unit before giving up and pausing for a
 // human (ADR-0068).
 const maxCIRetries = 3
+
+// maxHookRetries caps how many times, within a single invokeForEvent call,
+// a Done/Continue turn gets retried after its commit is rejected by the
+// target repo's own pre-commit hook before invokeForEvent gives up and
+// pauses for a human (ADR-0075/ADR-0076). Scoped to one event rather than
+// persisted across events like maxCIRetries — each retry re-invokes the
+// runner synchronously in the same call, so there's no daemon-restart gap
+// to survive.
+const maxHookRetries = 2
 
 // --- resume helpers ---
 
