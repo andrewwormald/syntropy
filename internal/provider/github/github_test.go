@@ -783,6 +783,107 @@ func TestDo_TokenSource_ErrorPropagates(t *testing.T) {
 	}
 }
 
+// --- 401 reactive retry-with-forced-refresh tests (ADR-0078) ---
+
+func TestDo_401_RetriesOnceWithReResolvedToken(t *testing.T) {
+	var gotAuthHeaders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthHeaders = append(gotAuthHeaders, r.Header.Get("Authorization"))
+		if len(gotAuthHeaders) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":1,"login":"andreww","type":"User"}`))
+	}))
+	defer srv.Close()
+
+	calls := 0
+	tokens := []string{"stale-token", "refreshed-token"}
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		TokenSource: func() (string, error) {
+			tok := tokens[calls]
+			calls++
+			return tok, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser: want success after retry, got %v", err)
+	}
+	if len(gotAuthHeaders) != 2 {
+		t.Fatalf("want 2 requests (original + retry), got %d", len(gotAuthHeaders))
+	}
+	if gotAuthHeaders[0] != "Bearer stale-token" {
+		t.Errorf("1st request: want %q, got %q", "Bearer stale-token", gotAuthHeaders[0])
+	}
+	if gotAuthHeaders[1] != "Bearer refreshed-token" {
+		t.Errorf("retry: want %q, got %q — tokenSource should be re-invoked on retry", "Bearer refreshed-token", gotAuthHeaders[1])
+	}
+	if calls != 2 {
+		t.Errorf("want tokenSource invoked twice, got %d", calls)
+	}
+}
+
+func TestDo_401_UnchangedErrorWhenRetryAlsoFails(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	calls := 0
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		TokenSource: func() (string, error) {
+			calls++
+			return "still-invalid-token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = p.AuthenticatedUser(t.Context())
+	if err == nil {
+		t.Fatal("want error when the retry also 401s, got nil")
+	}
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		t.Errorf("want a 401 apiError, got %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("want exactly one retry (2 requests total), got %d", requests)
+	}
+	if calls != 2 {
+		t.Errorf("want tokenSource re-invoked once for the retry, got %d", calls)
+	}
+}
+
+func TestDo_401_NoRetryWithoutTokenSource(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Token: "static-token"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err == nil {
+		t.Fatal("want error on 401, got nil")
+	}
+	if requests != 1 {
+		t.Errorf("want no retry for a static Token (can't change between attempts), got %d requests", requests)
+	}
+}
+
 func TestDoGraphQL_TokenSource_ResolvedFreshOnEveryRequest(t *testing.T) {
 	var gotAuthHeaders []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
