@@ -1,4 +1,4 @@
-# ADR-0076: Reactive 401 retry-with-forced-refresh in the provider `do()` methods
+# ADR-0078: Reactive 401 retry-with-forced-refresh in the provider `do()` methods
 
 **Status**: Accepted
 **Date**: 2026-07-27

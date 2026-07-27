@@ -146,7 +146,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 	hadAuthErr := false
 	var mu sync.Mutex // for any future concurrent polls per Run; currently serial
 
-	for unitID, mr := range r.InFlight {
+	for _, mr := range r.InFlight {
 		// 1. MR state delta?
 		state, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
 		if err != nil {
@@ -160,25 +160,42 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			continue
 		}
 		prev := mrStates[mr.IID]
+		ev := mrStateEvent(state, mr)
+		if ev.Kind != "" {
+			// Terminal state (merged/closed). Dispatch every tick this unit
+			// is still in InFlight — NOT gated on state != prev. Found
+			// live: caching mrStates[mr.IID] = state the instant a change
+			// is *detected* (regardless of whether resume() actually
+			// *processed* it — e.g. the Run was Paused at that exact
+			// moment, which silently drops all events including this one)
+			// permanently stops any future re-check, since the next tick's
+			// state also equals the now-cached prev. The only real proof
+			// the workflow applied the transition is markUnitMerged/
+			// markUnitBlacklisted removing the unit from InFlight — and
+			// since ActiveRuns is re-read fresh every tick, that already
+			// self-terminates this loop naturally once it actually lands;
+			// redispatching a few extra times before then is harmless
+			// (resume() no-ops on a unit it's already completed), while
+			// silently giving up after one dropped attempt is not.
+			if state != prev {
+				mu.Lock()
+				mrStates[mr.IID] = state
+				updated = true
+				mu.Unlock()
+			}
+			ev.IsAuthor = false // MR-state events aren't from the author
+			if err := l.Dispatcher(ctx, r.RunID, ev); err != nil {
+				l.Logger.Warn("poller: dispatch MR state event", "err", err)
+			}
+			// Don't poll notes for it this tick — resume() will move the
+			// unit out of InFlight once it actually processes the event.
+			continue
+		}
 		if state != prev {
 			mu.Lock()
 			mrStates[mr.IID] = state
 			updated = true
 			mu.Unlock()
-			ev := mrStateEvent(state, mr)
-			if ev.Kind != "" {
-				ev.IsAuthor = false // MR-state events aren't from the author
-				if err := l.Dispatcher(ctx, r.RunID, ev); err != nil {
-					l.Logger.Warn("poller: dispatch MR state event", "err", err)
-				}
-				// If the MR is terminal (merged/closed), don't poll notes
-				// for it this tick — resume() will move the unit out of
-				// InFlight on the next iteration anyway.
-				if state == "merged" || state == "closed" {
-					_ = unitID // currently unused; reserved for future per-unit logging
-					continue
-				}
-			}
 		}
 
 		// 2. New comments since last seen? Per-stream cursor with a

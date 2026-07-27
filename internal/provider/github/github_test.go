@@ -783,7 +783,7 @@ func TestDo_TokenSource_ErrorPropagates(t *testing.T) {
 	}
 }
 
-// --- 401 reactive retry-with-forced-refresh tests (ADR-0076) ---
+// --- 401 reactive retry-with-forced-refresh tests (ADR-0078) ---
 
 func TestDo_401_RetriesOnceWithReResolvedToken(t *testing.T) {
 	var gotAuthHeaders []string

@@ -384,7 +384,7 @@ func (p *Provider) doJSON(ctx context.Context, method, path string, in, out any)
 }
 
 // do issues a request and, on a 401, retries exactly once with a freshly
-// re-resolved token before giving up (see ADR-0076). tokenSource already
+// re-resolved token before giving up (see ADR-0078). tokenSource already
 // re-resolves on every call (ADR-0063), which for GitLab means re-invoking
 // RefreshGlabToken (ADR-0065) — so simply calling doOnce a second time is
 // enough to force a fresh refresh attempt. A 401 is ambiguous: it can mean
