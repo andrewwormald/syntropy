@@ -49,12 +49,12 @@ didn't explicitly decide to ship something.
 
 Add `(*Deps).commitStrayWork(ctx, worktree, branch, commitMsg)`: checks
 `HasWorkBeyondBase`, and if true, commits (tolerating `ErrNoChanges` —
-the runner may have self-committed) and pushes. Entirely best-effort —
-any error is swallowed rather than surfaced, so it never interferes
-with the decision's own pause/reply/messaging logic. Worst case on
-failure is exactly the status quo before this fix: a future
-`SyncWithBase` catches the same dirty tree and pauses with a message a
-human can still act on.
+the runner may have self-committed). **It deliberately does not push.**
+Entirely best-effort — any error is swallowed rather than surfaced, so
+it never interferes with the decision's own pause/reply/messaging
+logic. Worst case on failure is exactly the status quo before this
+fix: a future `SyncWithBase` catches the same dirty tree and pauses
+with a message a human can still act on.
 
 Call it as the first line of each of `DecisionNoChange`, `DecisionAsk`,
 `DecisionFail`, and `DecisionRetryCI` in `invokeForEvent`
@@ -62,11 +62,40 @@ Call it as the first line of each of `DecisionNoChange`, `DecisionAsk`,
 pause/reply/retry logic runs. `DecisionDone`/`DecisionContinue` are
 untouched; they already have their own, more detailed version of this
 same check (which also handles discussion-resolution and messaging
-based on whether work was found), so adding the generic helper there
-too would just double the git calls.
+based on whether work was found, and does push), so adding the generic
+helper there too would just double the git calls.
+
+**Commit only, never push, for these four decisions.** The first draft
+of this fix pushed unconditionally, matching Continue/Done. On review,
+that's wrong: Continue/Done are the runner explicitly saying "this is
+shippable," which is the only signal syntropy has that a change is
+safe to expose on the reviewable branch. NoChange/Ask/Fail/RetryCI are
+the opposite signal — the runner gave up, is blocked on a question, or
+judged the failure as unrelated to code — so any stray edit sitting in
+the worktree has no such endorsement and no build/test verification
+behind it. Pushing it anyway would trade "worktree stuck dirty" for
+"unverified, possibly-broken code lands on the MR and reviewers/CI see
+it" — a worse failure mode, not a better one. A local commit already
+fully satisfies `SyncWithBase` (ADR-0046), which only checks for a
+dirty tree, not push status — so the fix doesn't need to push to work.
+Nothing is lost either: the commit persists in the worktree, and the
+next Continue/Done turn's own `HasWorkBeyondBase` check will find it
+(exactly the "runner self-committed its own work" case that check
+already handles) and push it for real once something actually says the
+change is shippable.
 
 ## Alternatives considered
 
+- **Revert/discard the stray edit** (`git checkout -- .` / `git clean`)
+  instead of committing it, on the theory that a decision other than
+  Continue/Done means the runner didn't intend to keep it. Rejected:
+  the live incident that prompted this ADR was exactly a case where the
+  stray edit was real, wanted work (a genuine test-coverage extension)
+  that a human manually verified and committed by hand during the
+  rescue — discarding it automatically would have thrown that away.
+  Committing locally (without pushing) gets the safety of "nothing is
+  silently lost" without the risk of "unverified code reaches the
+  remote branch."
 - **Fail the turn instead of silently committing** when a
   NoChange/Ask/Fail/RetryCI turn leaves a dirty tree, forcing a pause
   with a clear "unexpected leftover changes" message. Rejected: the
@@ -88,12 +117,19 @@ too would just double the git calls.
 
 - A runner turn that edits files but doesn't conclude with
   Continue/Done can no longer leave that edit stranded — it's
-  committed and pushed regardless of which of the five decisions comes
+  committed locally regardless of which of the five decisions comes
   back, closing the whole class of bug ADR-0066 only partially closed.
+  It isn't pushed until a later Continue/Done turn (or a manual
+  `/syntropy retry` that produces one) actually finds it via
+  `HasWorkBeyondBase` and ships it.
 - `DecisionNoChange`'s webhook-loop guard (no top-level comment posted)
-  is unaffected — the safety-net commit/push doesn't post anything on
-  its own; only the branch's existing reply logic decides whether to
-  comment.
+  is unaffected — the safety-net commit doesn't post anything or touch
+  the remote on its own; only the branch's existing reply logic decides
+  whether to comment.
+- A run that gets abandoned/skipped while sitting on one of these
+  local-only commits simply drops them along with the rest of the
+  worktree — they were never pushed, so nothing needs cleaning up
+  upstream.
 - This remains prompt-independent and structural: it doesn't rely on
   the runner behaving any particular way, unlike ADR-0073's git
   guidance which is advisory. If a decision path is ever added to this
