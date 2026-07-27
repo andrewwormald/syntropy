@@ -1698,15 +1698,24 @@ func shortRunID(runID string) string {
 	return runID
 }
 
-// buildCommitMessage produces a commit message for a follow-up commit
-// (addressing a review comment or fixing CI). Includes the event's source
-// so the audit trail in `git log` matches the MR conversation.
 // commitStrayWork is a safety net for invokeForEvent decision paths that
 // don't otherwise touch git (NoChange/Ask/Fail/RetryCI): the runner can
 // still have edited files even after concluding nothing shippable came of
 // it — e.g. a partial edit made before deciding to ask a question, or
 // before giving up. Left uncommitted, that silently trips a future
 // SyncWithBase's uncommitted-changes guard (found live — see ADR-0074).
+//
+// Commits ONLY — deliberately does not push. These decisions are the
+// runner saying "this isn't the deliverable" (gave up, needs input,
+// judged CI as infra noise), so there's no verification the stray edit
+// even builds; pushing it straight to a branch reviewers/CI will see
+// would trade the uncommitted-tree bug for a worse one (unreviewed,
+// unverified code landing on the MR). A local commit already satisfies
+// SyncWithBase (it only checks for a dirty tree) without that exposure —
+// the work isn't lost, either: the next Continue/Done turn's own
+// HasWorkBeyondBase check (or a later push some other command triggers)
+// will find it and push it once something actually says it's shippable.
+//
 // Best-effort: any error here is swallowed rather than surfaced, since it
 // must not block the decision's own pause/reply handling below — worst
 // case is the same uncommitted-changes guard firing as before this fix
@@ -1719,12 +1728,12 @@ func (d *Deps) commitStrayWork(ctx context.Context, worktree, branch, commitMsg 
 	if err != nil || !hasWork {
 		return
 	}
-	if cErr := d.Git.Commit(ctx, worktree, commitMsg); cErr != nil && !errors.Is(cErr, git.ErrNoChanges) {
-		return
-	}
-	_ = d.Git.Push(ctx, worktree, branch)
+	_ = d.Git.Commit(ctx, worktree, commitMsg)
 }
 
+// buildCommitMessage produces a commit message for a follow-up commit
+// (addressing a review comment or fixing CI). Includes the event's source
+// so the audit trail in `git log` matches the MR conversation.
 func buildCommitMessage(phase Phase, unitID string, ev provider.Event, runID string) string {
 	var subject string
 	switch phase {

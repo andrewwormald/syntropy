@@ -2067,9 +2067,14 @@ func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
 // permanently uncommitted, silently tripping a future SyncWithBase's
 // uncommitted-changes guard. Found live on a real run stuck on exactly
 // this after an address_comment turn returned something other than
-// Continue/Done. All four decisions must commit+push any stray work
-// first, the same safety net Continue/Done already have (ADR-0066).
-func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkBeforePausing(t *testing.T) {
+// Continue/Done. All four decisions must commit any stray work first —
+// but NOT push it: unlike Continue/Done, these decisions are the runner
+// saying the turn wasn't shippable, so there's no verification a stray
+// edit even builds; a local commit satisfies SyncWithBase without
+// exposing unverified work on the remote branch. A later Continue/Done
+// turn's own HasWorkBeyondBase check will find and push it once
+// something actually says it's shippable.
+func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkLocallyBeforePausing(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{
@@ -2092,12 +2097,12 @@ func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkBeforePausing(t *testing.T
 	if len(g.commits) != 1 {
 		t.Errorf("DecisionAsk must commit any stray work before pausing; commits=%v", g.commits)
 	}
-	if len(g.pushes) != 1 {
-		t.Errorf("DecisionAsk must push any stray commit before pausing; pushes=%v", g.pushes)
+	if len(g.pushes) != 0 {
+		t.Errorf("DecisionAsk must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
 }
 
-func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkBeforePausing(t *testing.T) {
+func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkLocallyBeforePausing(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{
@@ -2120,12 +2125,12 @@ func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkBeforePausing(t *testing.
 	if len(g.commits) != 1 {
 		t.Errorf("DecisionFail must commit any stray work before pausing; commits=%v", g.commits)
 	}
-	if len(g.pushes) != 1 {
-		t.Errorf("DecisionFail must push any stray commit before pausing; pushes=%v", g.pushes)
+	if len(g.pushes) != 0 {
+		t.Errorf("DecisionFail must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
 }
 
-func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWork(t *testing.T) {
+func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWorkLocally(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
@@ -2145,16 +2150,16 @@ func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWork(t *testing.T) {
 	if len(g.commits) != 1 {
 		t.Errorf("DecisionNoChange must commit any stray work; commits=%v", g.commits)
 	}
-	if len(g.pushes) != 1 {
-		t.Errorf("DecisionNoChange must push any stray commit; pushes=%v", g.pushes)
+	if len(g.pushes) != 0 {
+		t.Errorf("DecisionNoChange must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
 	if len(fp.comments) != 0 {
 		t.Errorf("DecisionNoChange must still not post a top-level comment (webhook-loop guard); comments=%+v", fp.comments)
 	}
 }
 
-// No stray work → no-op. Confirms the safety net doesn't commit/push on
-// every turn regardless of whether the runner actually touched anything.
+// No stray work → no-op. Confirms the safety net doesn't commit on every
+// turn regardless of whether the runner actually touched anything.
 func TestResume_NoteAdded_DecisionNoChange_NoStrayWork_DoesNotCommit(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
