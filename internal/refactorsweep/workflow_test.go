@@ -2992,12 +2992,11 @@ func TestResume_AuthFailure_ParksRunWithProviderAuthPrefix(t *testing.T) {
 	if !strings.HasPrefix(r.Object.PauseReason, providerAuthPausePrefix) {
 		t.Errorf("PauseReason should start with provider-auth prefix, got %q", r.Object.PauseReason)
 	}
-	// A comment should be posted on the in-flight MR.
-	if len(fp.comments) != 1 {
-		t.Errorf("expected one comment on auth failure; got %d", len(fp.comments))
-	}
-	if !strings.Contains(fp.comments[0].Body, "401") {
-		t.Errorf("comment should mention 401, got: %q", fp.comments[0].Body)
+	// ADR-0075: an expired local CLI token is syntropy's own operational
+	// problem, not something the author/reviewer can act on — no comment
+	// should reach the MR.
+	if len(fp.comments) != 0 {
+		t.Errorf("auth failure must not post to the MR; got %d comments", len(fp.comments))
 	}
 }
 

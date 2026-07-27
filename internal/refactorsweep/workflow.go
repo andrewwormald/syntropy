@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1496,27 +1497,26 @@ const providerAuthPausePrefix = "provider-auth: "
 // EventProviderAuthRestored events synthesised by the poller (ADR-0038).
 //
 //   - AuthFailure: park the Run (Paused with providerAuthPausePrefix) and
-//     post a comment on the in-flight MR. Idempotent — if the Run is already
-//     in an auth-pause, stay there without posting a duplicate comment.
+//     log internally. Idempotent — if the Run is already in an auth-pause,
+//     stay there without logging again.
 //   - AuthRestored: if the Run is in an auth-pause, clear PauseReason and
 //     return to AwaitingMerge. No-op for any other pause reason.
+//
+// Deliberately does NOT post to the MR (see ADR-0075): an expired local
+// CLI token is syntropy's own operational problem, not something the
+// author/reviewer on the other end can act on or should see noise about —
+// and it already resolves itself without them, the moment the token is
+// refreshed and the next poll succeeds.
 func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	switch ev.Kind {
 	case provider.EventProviderAuthFailure:
 		if strings.HasPrefix(r.Object.PauseReason, providerAuthPausePrefix) {
-			return StatusPaused, nil // already parked; skip duplicate comment
+			return StatusPaused, nil // already parked; skip duplicate log
 		}
 		r.Object.PauseReason = providerAuthPausePrefix +
 			"token expired or invalid — refresh via `gh auth login` (GitHub) or `glab auth login` (GitLab) and restart the daemon"
-		if p, ok := d.Providers[r.Object.ProviderName]; ok {
-			for _, mr := range r.Object.InFlight {
-				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-					"⚠️ Paused — the provider token has expired (HTTP 401). "+
-						"Please refresh credentials (`gh auth login` / `glab auth login`) and restart the daemon. "+
-						"The Run will resume automatically on the next successful poll.")
-				break // one comment is enough; concurrency=1 in v1
-			}
-		}
+		slog.Warn("provider auth failure — pausing run until token is refreshed",
+			"run_id", r.RunID, "provider", r.Object.ProviderName)
 		return StatusPaused, nil
 
 	case provider.EventProviderAuthRestored:
@@ -1525,6 +1525,7 @@ func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[Agen
 			return r.Status, nil
 		}
 		r.Object.PauseReason = ""
+		slog.Info("provider auth restored — resuming run", "run_id", r.RunID, "provider", r.Object.ProviderName)
 		return StatusAwaitingMerge, nil
 	}
 	return r.Status, nil
