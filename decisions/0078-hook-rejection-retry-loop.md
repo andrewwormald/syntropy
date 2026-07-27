@@ -1,4 +1,4 @@
-# ADR-0076: Wire pre-commit hook rejections into `invokeForEvent` with a bounded retry loop
+# ADR-0078: Wire pre-commit hook rejections into `invokeForEvent` with a bounded retry loop
 
 **Status**: Accepted
 **Date**: 2026-07-27
