@@ -123,3 +123,4 @@ forces or unlocks.
 | 0073 | Mandatory decision marker on every turn; the runner never pushes or rewrites history | Accepted | 2026-07-27 |
 | 0074 | Commit/push stray work on every `invokeForEvent` decision, not just Continue/Done | Accepted | 2026-07-27 |
 | 0075 | Feed pre-commit hook rejections back to the runner as `HookFailure`     | Accepted | 2026-07-27 |
+| 0076 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |
