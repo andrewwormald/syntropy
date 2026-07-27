@@ -1883,6 +1883,86 @@ func TestResume_MRClosed_MovesToBlacklisted(t *testing.T) {
 	}
 }
 
+// Regression (ADR-0077): a merge/close is ground truth from the provider
+// and must be applied even while the Run is Paused for an unrelated
+// reason (an unanswered question, a hook failure, anything). Found live:
+// a Run's MR merged while it happened to be paused, and the pre-fix code
+// silently dropped the event via the generic "while Paused, ignore
+// everything but control commands" gate — permanently stuck until a
+// human noticed and replied `/syntropy resume`, at which point there was
+// no longer any event left to re-apply the merge (ADR-0076 covers the
+// poller half of this; this is the workflow half).
+func TestResume_MRMerged_AppliesEvenWhilePaused(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "acme/example", IID: 42}
+	r := awaitingRun(t, "svc-a", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "unrelated question the human never got to answer"
+
+	ev := provider.Event{Kind: provider.EventMRMerged, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("a merge must be applied even while Paused; want Discovering, got %v", next)
+	}
+	if _, still := r.Object.InFlight["svc-a"]; still {
+		t.Errorf("unit should be removed from InFlight after merge, even though the Run was paused")
+	}
+	if len(r.Object.Completed) != 1 || r.Object.Completed[0].UnitID != "svc-a" {
+		t.Errorf("svc-a should be in Completed; got %+v", r.Object.Completed)
+	}
+}
+
+func TestResume_MRClosed_AppliesEvenWhilePaused(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "svc-x", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "unrelated question the human never got to answer"
+
+	ev := provider.Event{Kind: provider.EventMRClosed, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("a close must be applied even while Paused; want Discovering, got %v", next)
+	}
+	if len(r.Object.Blacklisted) != 1 {
+		t.Errorf("svc-x should be blacklisted even though the Run was paused; got %+v", r.Object.Blacklisted)
+	}
+}
+
+// Cross-talk (an MR-merged event for an MR this Run isn't tracking) must
+// still leave a Paused Run paused — the bypass above is specifically for
+// events matching an in-flight unit, not a blanket "any merge event
+// unpauses everything."
+func TestResume_MRMerged_CrossTalk_StaysPausedWhenNoMatchingUnit(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "still waiting on an answer"
+
+	unrelatedMR := provider.MR{ProjectID: "x/y", IID: 999}
+	ev := provider.Event{Kind: provider.EventMRMerged, MR: unrelatedMR}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("cross-talk merge event for an untracked MR must not unpause the Run; got %v", next)
+	}
+	if r.Object.PauseReason == "" {
+		t.Errorf("PauseReason should be untouched by cross-talk")
+	}
+}
+
 // TestResume_CommentAfterMerge_DroppedWithoutInvokingRunner reproduces the
 // incident scenario: a reviewer comment lands on an MR that was already
 // merged (and thus already removed from InFlight). unitForMR can no longer

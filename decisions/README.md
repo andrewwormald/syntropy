@@ -124,3 +124,4 @@ forces or unlocks.
 | 0074 | Commit/push stray work on every `invokeForEvent` decision, not just Continue/Done | Accepted | 2026-07-27 |
 | 0075 | Feed pre-commit hook rejections back to the runner as `HookFailure`     | Accepted | 2026-07-27 |
 | 0076 | Redispatch terminal MR-state events every tick, don't cache "detected" as "delivered" | Accepted | 2026-07-27 |
+| 0077 | MR merge/close bypasses the Paused early-return                        | Accepted | 2026-07-27 |

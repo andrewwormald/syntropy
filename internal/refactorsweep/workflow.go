@@ -958,7 +958,8 @@ func isOwnEcho(r *workflow.Run[AgentState, AgentStatus], body string) bool {
 //  1. Decode the event; bump EventsSeen; tag IsAuthor.
 //  2. Detect /syntropy control commands and route them (TODO: real
 //     parsing in the next commit). When paused, only control commands
-//     have any effect; everything else stays paused.
+//     and MR lifecycle truth (merged/closed) have any effect; everything
+//     else stays paused.
 //  3. Look up which in-flight unit this event is for. Events for MRs we
 //     don't track (cross-talk via the shared project webhook) are dropped.
 //  4. Lifecycle events (MRMerged/MRClosed) bypass the filter — they
@@ -1066,8 +1067,33 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return d.handleProviderAuthEvent(ctx, r, ev)
 	}
 
-	// While paused, only control commands progress the Run. All other
-	// inbound events are noted (EventsSeen above) but produce no transition.
+	// MR lifecycle truth (merged/closed) also bypasses the Paused
+	// early-return below, same rationale as the auth-restore bypass above
+	// (ADR-0077): whatever the Run is paused about — an unanswered
+	// question, a hook failure, anything — is moot once the MR itself has
+	// actually merged or closed on the provider side. Found live: a Run
+	// sat Paused for over an hour after its MR had already merged, because
+	// the merge event arrived while paused and the pre-ADR-0077 code had
+	// no path to apply it until a human noticed and replied `/syntropy
+	// resume` — syntropy should align its own state with reality the
+	// moment it learns the truth, not wait to be told to look.
+	if ev.Kind == provider.EventMRMerged || ev.Kind == provider.EventMRClosed {
+		if unitID := unitForMR(r.Object.InFlight, ev.MR); unitID != "" {
+			switch ev.Kind {
+			case provider.EventMRMerged:
+				return d.markUnitMerged(ctx, r, unitID, ev.MR), nil
+			case provider.EventMRClosed:
+				return d.markUnitBlacklisted(ctx, r, unitID, ev.MR, "MR closed without merge"), nil
+			}
+		}
+		// No matching in-flight unit — cross-talk on an MR we no longer
+		// track. Fall through to the normal Paused/AwaitingMerge handling
+		// below, same as any other unmatched event.
+	}
+
+	// While paused, only control commands and MR lifecycle truth (handled
+	// above) progress the Run. All other inbound events are noted
+	// (EventsSeen above) but produce no transition.
 	if r.Status == StatusPaused {
 		return StatusPaused, nil
 	}
@@ -1080,12 +1106,9 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return StatusAwaitingMerge, nil
 	}
 
-	// Lifecycle events bypass the filter.
+	// Remaining informational lifecycle events (MRMerged/MRClosed are
+	// already handled above, before the Paused gate).
 	switch ev.Kind {
-	case provider.EventMRMerged:
-		return d.markUnitMerged(ctx, r, unitID, ev.MR), nil
-	case provider.EventMRClosed:
-		return d.markUnitBlacklisted(ctx, r, unitID, ev.MR, "MR closed without merge"), nil
 	case provider.EventMRUpdated, provider.EventPipelineSucceeded:
 		if ev.Kind == provider.EventPipelineSucceeded {
 			// A green pipeline clears any DecisionRetryCI streak (ADR-0068)
