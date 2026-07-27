@@ -206,8 +206,22 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 
 	decision, summary, question, title, err := ParseDecision(resultText)
 	if err != nil {
-		return runner.Response{Tokens: tokens, StartedAt: start, EndedAt: end},
-			fmt.Errorf("parse claude output: %w; raw output:\n%s", err, rawOut)
+		// Surface resultText (the model's actual, already-extracted natural-
+		// language response — e.g. "I need your confirmation before
+		// force-pushing...") rather than rawOut (the full JSON envelope:
+		// cost, token usage, tool-call metadata, session IDs). This error's
+		// %v ends up verbatim in a human-facing MR/PR comment
+		// (invokeForEvent's "runner error during %s" pause message) — a raw
+		// JSON dump there is exactly the "lumping logs at the user" this
+		// avoids. Cap it defensively; a model that goes on at length
+		// shouldn't produce an unbounded comment.
+		shown := strings.TrimSpace(resultText)
+		const maxShown = 2000
+		if len(shown) > maxShown {
+			shown = shown[:maxShown] + "…"
+		}
+		return runner.Response{Summary: shown, Tokens: tokens, StartedAt: start, EndedAt: end},
+			fmt.Errorf("parse claude output: %w; response was:\n%s", err, shown)
 	}
 	return runner.Response{
 		Decision:  decision,
@@ -345,6 +359,22 @@ you happen to notice along the way. If you spot other work worth doing,
 mention it in your summary instead of doing it now; a future unit can
 pick it up.
 
+## Git: never push, never rewrite history
+
+The harness owns every push, using a plain (non-force) ` + "`git push`" + `
+— never run ` + "`git push`" + ` yourself, in any form, including
+` + "`--force`" + ` or ` + "`--force-with-lease`" + `. After you finish, the
+harness commits and pushes whatever you've left in the worktree; you
+don't need to (and must not) push it yourself.
+
+For the same reason, never rewrite existing commits — no
+` + "`git commit --amend`" + `, no rebase, no ` + "`git reset`" + ` past a
+commit that's already landed. Because the harness's own push is a plain,
+non-force push, any local history rewrite makes that push fail as
+"non-fast-forward". If an earlier commit's message or content needs
+fixing, make a **new** commit that fixes it forward instead — that's
+always safe to push normally.
+
 `
 
 // decisionProtocol is the marker-based signalling everflow uses to read
@@ -375,6 +405,16 @@ When investigating a CI failure, choose between these four outcomes:
 The text before the tag becomes the recorded Summary; syntropy strips
 the tag itself from the output. Only the LAST occurrence of the tag in
 your response is read, so feel free to write naturally up to that point.
+
+This tag is mandatory on every turn, with no exceptions — including a
+turn where a tool call you needed gets denied or blocked partway
+through (e.g. a permission rule refuses a command you tried to run).
+When that happens, do not just stop and describe the situation in
+plain text — that produces no decision and leaves the run stuck with
+nothing useful recorded. Instead, end with
+` + "`<syntropy-decision>ask: <one-line question></syntropy-decision>`" + `
+describing exactly what you needed to do and why it was blocked, so a
+human can unblock or redirect you.
 `
 
 // --- decision parsing ---

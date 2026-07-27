@@ -120,3 +120,4 @@ forces or unlocks.
 | 0070 | Direct-SQL deletion for terminal-Run retention cleanup                  | Accepted | 2026-07-22 |
 | 0071 | Retention sweeper loop wired into the daemon                           | Accepted | 2026-07-23 |
 | 0072 | Non-author review comments — auto-fix defects, ask on steering          | Accepted | 2026-07-23 |
+| 0073 | Mandatory decision marker on every turn; the runner never pushes or rewrites history | Accepted | 2026-07-27 |
