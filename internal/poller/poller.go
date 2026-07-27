@@ -199,6 +199,25 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			mu.Unlock()
 		}
 
+		// Merge conflict? Dispatched unconditionally every tick the conflict
+		// persists, same rationale as the terminal-state redispatch above
+		// (ADR-0080/ADR-0076): no cache of "already told them" is kept here,
+		// since resume() no-ops once it's already handling the conflict, and
+		// the runner clearing the conflict is what actually stops HasConflict
+		// from being true on the next poll.
+		if mrState.HasConflict {
+			conflictEv := provider.Event{
+				Kind:       provider.EventMRConflict,
+				ProjectID:  mr.ProjectID,
+				MR:         mr,
+				IsAuthor:   false,
+				ReceivedAt: time.Now().UnixNano(),
+			}
+			if err := l.Dispatcher(ctx, r.RunID, conflictEv); err != nil {
+				l.Logger.Warn("poller: dispatch MR conflict event", "run_id", r.RunID, "mr_iid", mr.IID, "err", err)
+			}
+		}
+
 		// 2. New comments since last seen? Per-stream cursor with a
 		// fallback to the legacy scalar for any stream not yet tracked
 		// individually (ADR-0041) — see provider.NoteCursor. ByStream
