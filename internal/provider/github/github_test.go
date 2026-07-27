@@ -315,8 +315,11 @@ func TestGetMRState_Open(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMRState: %v", err)
 	}
-	if got != "opened" {
-		t.Errorf("open: want opened, got %q", got)
+	if got.State != "opened" {
+		t.Errorf("open: want opened, got %q", got.State)
+	}
+	if got.HasConflict {
+		t.Errorf("open: want HasConflict false, got true")
 	}
 }
 
@@ -327,8 +330,8 @@ func TestGetMRState_Closed(t *testing.T) {
 	defer srv.Close()
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
 	got, _ := p.GetMRState(t.Context(), "owner/repo", 42)
-	if got != "closed" {
-		t.Errorf("closed: want closed, got %q", got)
+	if got.State != "closed" {
+		t.Errorf("closed: want closed, got %q", got.State)
 	}
 }
 
@@ -339,8 +342,26 @@ func TestGetMRState_Merged(t *testing.T) {
 	defer srv.Close()
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
 	got, _ := p.GetMRState(t.Context(), "owner/repo", 42)
-	if got != "merged" {
-		t.Errorf("merged: want merged, got %q", got)
+	if got.State != "merged" {
+		t.Errorf("merged: want merged, got %q", got.State)
+	}
+}
+
+func TestGetMRState_Conflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"open","merged":false,"mergeable_state":"dirty"}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMRState(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMRState: %v", err)
+	}
+	if !got.HasConflict {
+		t.Errorf("dirty: want HasConflict true, got false")
+	}
+	if got.State != "opened" {
+		t.Errorf("dirty: want state opened, got %q", got.State)
 	}
 }
 

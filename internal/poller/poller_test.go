@@ -63,11 +63,11 @@ func (f *fakeAuthProvider) ReactToNote(_ context.Context, _ string, _ int, _ int
 }
 func (f *fakeAuthProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error { return nil }
 func (f *fakeAuthProvider) IsBot(_ provider.User) bool { return false }
-func (f *fakeAuthProvider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
+func (f *fakeAuthProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getMRStateCalls++
-	return "", f.getMRStateErr
+	return provider.MRState{}, f.getMRStateErr
 }
 
 // dispatchRecord captures events dispatched by the poller.
@@ -249,8 +249,8 @@ type mrStateProvider struct {
 	state string
 }
 
-func (p *mrStateProvider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
-	return p.state, nil
+func (p *mrStateProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
+	return provider.MRState{State: p.state}, nil
 }
 
 // Regression (found live on a real run stuck for over an hour): the poller

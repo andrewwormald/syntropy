@@ -89,7 +89,9 @@ type Provider interface {
 	ReactToNote(ctx context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error
 
 	// Polling support (used when EventSource=poll instead of webhook).
-	GetMRState(ctx context.Context, projectID string, mrIID int) (state string, err error)
+	// GetMRState returns both the lifecycle state and mergeability from the
+	// same underlying API call — HasConflict costs no extra request.
+	GetMRState(ctx context.Context, projectID string, mrIID int) (MRState, error)
 	ListNotesSince(ctx context.Context, projectID string, mrIID int, since NoteCursor) ([]NotePoll, error)
 
 	// ResolveDiscussion marks a comment thread as resolved on the platform.
@@ -128,7 +130,25 @@ const (
 	// on the first successful API call after a prior auth failure. It clears
 	// the auth-pause state and returns the Run to normal watching.
 	EventProviderAuthRestored EventKind = "provider_auth_restored"
+
+	// EventMRConflict is a synthetic event surfaced from MRState.HasConflict
+	// via the existing poll interval, so the runner can resolve a merge
+	// conflict without waiting for an unrelated comment/CI event to
+	// incidentally surface it via SyncWithBase (see ADR-0046).
+	EventMRConflict EventKind = "mr_conflict"
 )
+
+// MRState is the polled snapshot GetMRState returns: the MR's lifecycle
+// state plus whether it currently has merge conflicts against its target
+// branch. Both come off the same API response, so surfacing HasConflict
+// alongside State costs no extra provider call.
+type MRState struct {
+	// State is one of "opened" | "closed" | "merged" | "locked".
+	State string
+	// HasConflict is true when the platform reports the MR/PR cannot be
+	// merged due to a conflict with its target branch.
+	HasConflict bool
+}
 
 // User is the normalised shape of a platform user. Author classification
 // (ADR-0017) uses Handle to match against the Run's recorded author.

@@ -148,7 +148,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 
 	for _, mr := range r.InFlight {
 		// 1. MR state delta?
-		state, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
+		mrState, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
 		if err != nil {
 			if provider.IsAuthError(err) {
 				hadAuthErr = true
@@ -159,6 +159,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			l.Logger.Warn("poller: GetMRState", "run_id", r.RunID, "mr_iid", mr.IID, "err", err)
 			continue
 		}
+		state := mrState.State
 		prev := mrStates[mr.IID]
 		ev := mrStateEvent(state, mr)
 		if ev.Kind != "" {

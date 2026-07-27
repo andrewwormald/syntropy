@@ -248,32 +248,39 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 // for callers that don't care about the merged-vs-just-closed distinction.
 // GetMRState → GET /repos/{owner}/{repo}/pulls/{number}. Returns one of
 // "opened" | "closed" | "merged" to match the poller's state-event
-// vocabulary (see internal/poller/poller.go mrStateEvent).
+// vocabulary (see internal/poller/poller.go mrStateEvent), plus whether the
+// PR has a merge conflict — from the same response, no extra request.
 //
 // GitHub's REST response has a `state` field ("open"|"closed") and a
 // separate `merged` boolean; we collapse them into the same three
 // strings GitLab returns so the poller can stay provider-agnostic.
-func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (string, error) {
+// `mergeable_state` is "dirty" when the PR conflicts with its base branch;
+// it's also null/absent while GitHub is still computing mergeability, which
+// we treat as "no conflict (yet)" rather than guessing.
+func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (provider.MRState, error) {
 	owner, repo, err := splitProjectID(projectID)
 	if err != nil {
-		return "", err
+		return provider.MRState{}, err
 	}
 	var pr struct {
-		State  string `json:"state"`
-		Merged bool   `json:"merged"`
+		State          string `json:"state"`
+		Merged         bool   `json:"merged"`
+		MergeableState string `json:"mergeable_state"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, mrIID)
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &pr); err != nil {
-		return "", err
+		return provider.MRState{}, err
 	}
+	st := provider.MRState{HasConflict: pr.MergeableState == "dirty"}
 	switch {
 	case pr.Merged:
-		return "merged", nil
+		st.State = "merged"
 	case pr.State == "closed":
-		return "closed", nil
+		st.State = "closed"
 	default:
-		return "opened", nil
+		st.State = "opened"
 	}
+	return st, nil
 }
 
 // GitHub's three comment endpoints (see ListNotesSince) each draw their

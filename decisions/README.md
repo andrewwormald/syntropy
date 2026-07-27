@@ -127,3 +127,4 @@ forces or unlocks.
 | 0077 | MR merge/close bypasses the Paused early-return                        | Accepted | 2026-07-27 |
 | 0078 | Wire pre-commit hook rejections into `invokeForEvent` with a bounded retry loop | Accepted | 2026-07-27 |
 | 0079 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |
+| 0080 | `GetMRState` surfaces merge-conflict status alongside lifecycle state   | Accepted | 2026-07-27 |
