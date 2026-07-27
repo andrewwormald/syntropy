@@ -421,3 +421,36 @@ func TestDo_401_NoRetryWithoutTokenSource(t *testing.T) {
 		t.Errorf("want no retry for a static Token (can't change between attempts), got %d requests", requests)
 	}
 }
+
+func TestGetMRState_NoConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"opened","has_conflicts":false}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMRState(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMRState: %v", err)
+	}
+	if got.State != "opened" {
+		t.Errorf("state: want opened, got %q", got.State)
+	}
+	if got.HasConflict {
+		t.Errorf("want HasConflict false, got true")
+	}
+}
+
+func TestGetMRState_Conflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"opened","has_conflicts":true}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMRState(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMRState: %v", err)
+	}
+	if !got.HasConflict {
+		t.Errorf("want HasConflict true, got false")
+	}
+}

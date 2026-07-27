@@ -156,7 +156,9 @@ func (f *fakeProvider) PostComment(_ context.Context, projectID string, mrIID in
 	return f.commentErr
 }
 func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
-func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (string, error)    { return "opened", nil }
+func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
+	return provider.MRState{State: "opened"}, nil
+}
 func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) {
 	return nil, nil
 }

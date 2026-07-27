@@ -255,18 +255,20 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 }
 
 // GetMRState → GET /api/v4/projects/:id/merge_requests/:iid. Returns the
-// MR's current `state` field ("opened" | "closed" | "merged" | "locked").
-// Used by the poller to detect lifecycle transitions.
-func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (string, error) {
+// MR's current `state` field ("opened" | "closed" | "merged" | "locked")
+// plus `has_conflicts`, used by the poller to detect lifecycle transitions
+// and merge conflicts from the same request.
+func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (provider.MRState, error) {
 	var resp struct {
-		State string `json:"state"`
+		State        string `json:"state"`
+		HasConflicts bool   `json:"has_conflicts"`
 	}
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
 		url.PathEscape(projectID), mrIID)
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return "", err
+		return provider.MRState{}, err
 	}
-	return resp.State, nil
+	return provider.MRState{State: resp.State, HasConflict: resp.HasConflicts}, nil
 }
 
 // streamNote is GitLab's single comment stream — unlike GitHub, all MR
