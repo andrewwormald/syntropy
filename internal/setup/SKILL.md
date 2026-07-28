@@ -35,27 +35,46 @@ directly.
 1. **Write a spec.** A markdown file with YAML frontmatter describing the
    goal, provider, project, and base repo. See `specs/README.md` in the
    syntropy repo for the anatomy, or ask the user for the details you need.
-2. **Check the target repo's `.syntropy.yml` before triggering anything —
-   first time in a repo means a short one-off setup conversation.**
-   `syntropy setup` writes this file to whatever directory it's run *from*
-   (`$(pwd)`, not the spec's `base_repo`) — it's easy for it to have never
-   actually landed in the repo a spec targets, and there's no other
-   warning if it hasn't. Look for `<base_repo>/.syntropy.yml`:
-   - If present, read its `title_convention` and move straight to writing
-     the spec — no need to mention any of this.
-   - If absent, this is the first time syntropy is being used against this
-     repo. Say so plainly (e.g. "First time running syntropy against this
-     repo — I need to ask a couple of quick setup questions before I can
-     start; this is a one-off, later runs won't need this"), then ask the
-     user for this repo's PR/MR title convention. Don't invent one
-     yourself — check the repo's own CI/Danger/lint config for an
-     enforced title format first and offer that as a starting point, but
-     confirm with the user before writing anything. Once confirmed, write
-     it yourself: `syntropy setup --title-convention "<their answer>"`,
-     run from inside `<base_repo>` (not from wherever this session's cwd
-     happens to be) — then continue straight on to writing the spec and
-     triggering the run in the same reply, since the user shouldn't have
-     to ask twice.
+2. **Run `syntropy config check --repo <base_repo>` before triggering
+   anything — a pure, cheap, no-tokens code check, not something to
+   reason about yourself.** `syntropy setup` writes `.syntropy.yml` to
+   whatever directory it's run *from* (`$(pwd)`, not the spec's
+   `base_repo`) — it's easy for it to have never actually landed in the
+   repo a spec targets, and there's no other warning if it hasn't. Don't
+   open or parse `.syntropy.yml` yourself; that's exactly the token spend
+   this command exists to avoid. Just run it and act on its exit code:
+   - **Exit 0 ("OK: ... has every recognised field configured")** — move
+     straight to writing the spec, no need to mention any of this to the
+     user.
+   - **Exit 1 ("MISSING: ...")** — it lists exactly which field(s) need
+     asking about (new syntropy versions may add more over time; the
+     command always reflects the current list, so don't hardcode field
+     names yourself). *Only now* is a conversational turn worth spending:
+     ask the user about each listed field. Say so plainly (e.g. "This
+     repo's `.syntropy.yml` is missing a title convention — I need to ask
+     before I can start; this is a one-off, later runs won't need this").
+     Don't invent an answer yourself — check the repo's own CI/Danger/lint
+     config for an enforced format first and offer that as a starting
+     point, but confirm with the user before writing anything.
+     - If they give you a real answer:
+       `syntropy setup --title-convention "<their answer>"`, run from
+       inside `<base_repo>` (not wherever this session's cwd happens to
+       be).
+     - If they explicitly decline to set one:
+       `syntropy setup --title-convention blank` — write the literal
+       sentinel, don't just skip writing anything, so `config check`
+       correctly reports it as already-decided next time instead of
+       flagging it as missing again.
+     - Either way, continue straight on to writing the spec and
+       triggering the run in the same reply — the user shouldn't have to
+       ask twice.
+
+   The point of running the check first is to spend a conversational
+   turn (and its tokens) only on fields that are *actually* missing —
+   never re-ask about something `config check` already reports as
+   configured, and never read the YAML yourself to double-check its
+   answer.
+
    Without this, MRs/PRs default to a generic `<goal>: <unit-id>` title —
    which can badly violate a repo's real conventions (e.g. an 80-char CI
    title-length check) and isn't obvious until CI already failed on it.

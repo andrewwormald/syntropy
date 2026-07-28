@@ -1,4 +1,4 @@
-# ADR-0082: `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before
+# ADR-0084: `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before
 
 **Status**: Accepted
 **Date**: 2026-07-28
@@ -77,7 +77,7 @@ filter step) once an in-flight unit matches:
 - An unpaused Run with a matching in-flight unit invokes the runner
   directly on `EventMRConflict` — verified by
   `TestResume_MRConflict_InvokesSubagent`.
-- Completes the ADR-0080/0081/0082 chain: detection → dispatch →
+- Completes the ADR-0080/0081/0084 chain: detection → dispatch →
   resolution, closing out the full spec goal of catching conflicts via
   the existing poll instead of waiting for an incidental comment/CI event
   to surface them through `SyncWithBase`.
