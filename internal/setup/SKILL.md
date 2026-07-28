@@ -32,9 +32,11 @@ directly.
 
 ## Basic flow
 
-1. **Write a spec.** A markdown file with YAML frontmatter describing the
-   goal, provider, project, and base repo. See `specs/README.md` in the
-   syntropy repo for the anatomy, or ask the user for the details you need.
+1. **Write a spec.** A markdown file with YAML frontmatter (`goal`,
+   `provider`, `project`, `base_branch`, `base_repo`, `concurrency`,
+   `draft_mrs`, `status`) plus a markdown body expanding the goal — see
+   the README's Quick Start section in the syntropy repo for a full
+   example, or ask the user for the details you need.
 2. **Run `syntropy config check --repo <base_repo>` before triggering
    anything — a pure, cheap, no-tokens code check, not something to
    reason about yourself.** `syntropy setup` writes `.syntropy.yml` to
