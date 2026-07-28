@@ -105,6 +105,100 @@ func TestCmdAbandon_SecondTap_ReactsBeforeConfirming(t *testing.T) {
 	}
 }
 
+// Regression: the confirmation prompt asks "Are you sure?" — a yes/no
+// question — but originally only accepted repeating the exact
+// "/syntropy abandon" command as confirmation, which reads as a
+// different, higher-effort action than answering yes/no. A plain "yes"
+// from the author must confirm exactly like the second "/syntropy
+// abandon" tap does.
+func TestCmdAbandon_PlainYesReply_Confirms(t *testing.T) {
+	tests := []string{"yes", "Yes", "YES", "y", "confirm", "confirmed", "yes.", "yes!", " yes "}
+	for _, body := range tests {
+		t.Run(body, func(t *testing.T) {
+			fp := &fakeProvider{}
+			d := newDeps(t, fp)
+			d.withRunner(t, &fakeRunner{})
+			mr := provider.MR{ProjectID: "x/y", IID: 7}
+			r := awaitingRun(t, "u", mr)
+			r.Status = StatusAwaitingAbandonConfirm
+			r.Object.AbandonRequestedAt = time.Now().Add(-1 * time.Minute)
+
+			ev := provider.Event{
+				Kind:   provider.EventNoteAdded,
+				MR:     mr,
+				Author: provider.User{Handle: "andreww"},
+				Note:   provider.Note{Body: body},
+			}
+			next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+			if err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			if next != StatusCancelled {
+				t.Errorf("plain %q reply should confirm → StatusCancelled, got %v", body, next)
+			}
+			if len(fp.closes) != 1 || fp.closes[0].IID != 7 {
+				t.Errorf("in-flight MRs should be closed; got %+v", fp.closes)
+			}
+			foundConfirmed := false
+			for _, c := range fp.comments {
+				if strings.Contains(c.Body, "Confirmed abandonment") {
+					foundConfirmed = true
+				}
+			}
+			if !foundConfirmed {
+				t.Errorf("expected a 'Confirmed abandonment' comment; got %+v", fp.comments)
+			}
+		})
+	}
+}
+
+// A non-author's "yes" must not confirm — only the Run's author can
+// confirm abandonment, same privilege rule as the /syntropy abandon path.
+func TestCmdAbandon_NonAuthorPlainYes_DoesNotConfirm(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusAwaitingAbandonConfirm
+	r.Object.AbandonRequestedAt = time.Now().Add(-1 * time.Minute)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "reviewer"}, // not the author
+		Note:   provider.Note{Body: "yes"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("non-author 'yes' must drop back to AwaitingMerge (cancelled), got %v", next)
+	}
+}
+
+// A reply that merely mentions "yes" as part of a longer sentence must
+// not be mistaken for confirmation — only an exact (trimmed, punctuation-
+// stripped) affirmative word confirms.
+func TestCmdAbandon_YesWithinLongerSentence_DoesNotConfirm(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusAwaitingAbandonConfirm
+	r.Object.AbandonRequestedAt = time.Now().Add(-1 * time.Minute)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "andreww"},
+		Note:   provider.Note{Body: "yes I saw this, will look tomorrow"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("a longer sentence containing 'yes' must not confirm; want cancelled (AwaitingMerge), got %v", next)
+	}
+}
+
 func TestResume_NonAbandonEventInConfirmWindow_DropsBack(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)

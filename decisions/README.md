@@ -134,3 +134,4 @@ forces or unlocks.
 | 0084 | `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before | Accepted | 2026-07-28 |
 | 0085 | `CreateMR` absorbs a duplicate-branch conflict as idempotent success     | Accepted | 2026-07-28 |
 | 0086 | `syntropy resume` detects Failed/Cancelled before trying `/control`     | Accepted | 2026-07-28 |
+| 0087 | Abandon confirmation accepts a plain "yes", not just the repeated command | Accepted | 2026-07-28 |
