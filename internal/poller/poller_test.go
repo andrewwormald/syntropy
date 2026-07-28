@@ -246,11 +246,12 @@ func TestPollRun_AuthRestored_DispatchesRestoredEvent(t *testing.T) {
 // (e.g. "merged") with no error, for terminal-state redispatch tests.
 type mrStateProvider struct {
 	fakeAuthProvider
-	state string
+	state       string
+	hasConflict bool
 }
 
 func (p *mrStateProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
-	return provider.MRState{State: p.state}, nil
+	return provider.MRState{State: p.state, HasConflict: p.hasConflict}, nil
 }
 
 // Regression (found live on a real run stuck for over an hour): the poller
@@ -325,6 +326,62 @@ func TestPollRun_MRMerged_StopsOnceUnitLeavesInFlight(t *testing.T) {
 	kinds := dr.kinds()
 	if len(kinds) != 1 {
 		t.Errorf("expected exactly one dispatch before the unit left InFlight; got %d (%v)", len(kinds), kinds)
+	}
+}
+
+// TestPollRun_HasConflict_DispatchesMRConflictEvent verifies that a
+// GetMRState response reporting HasConflict surfaces provider.EventMRConflict
+// (ADR-0080), on the existing poll interval with no extra API call.
+func TestPollRun_HasConflict_DispatchesMRConflictEvent(t *testing.T) {
+	fp := &mrStateProvider{state: "opened", hasConflict: true}
+	dr := &dispatchRecord{}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": fp},
+		Dispatcher: dr.dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	run := ActiveRun{
+		RunID:    "run-5",
+		Provider: "fake",
+		InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: 91001}},
+	}
+
+	l.pollRun(t.Context(), run)
+	l.pollRun(t.Context(), run)
+
+	kinds := dr.kinds()
+	if len(kinds) != 2 {
+		t.Fatalf("expected EventMRConflict dispatched every tick while HasConflict stays true; got %d dispatches (%v)", len(kinds), kinds)
+	}
+	for _, k := range kinds {
+		if k != provider.EventMRConflict {
+			t.Errorf("expected only EventMRConflict; got %v", k)
+		}
+	}
+}
+
+// TestPollRun_NoConflict_DoesNotDispatchMRConflictEvent verifies a clean
+// (mergeable) MR produces no EventMRConflict dispatch.
+func TestPollRun_NoConflict_DoesNotDispatchMRConflictEvent(t *testing.T) {
+	fp := &mrStateProvider{state: "opened", hasConflict: false}
+	dr := &dispatchRecord{}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": fp},
+		Dispatcher: dr.dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	run := ActiveRun{
+		RunID:    "run-6",
+		Provider: "fake",
+		InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: 91002}},
+	}
+
+	l.pollRun(t.Context(), run)
+
+	if kinds := dr.kinds(); len(kinds) != 0 {
+		t.Errorf("expected no dispatch for a conflict-free MR; got %v", kinds)
 	}
 }
 
