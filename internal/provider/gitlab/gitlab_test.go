@@ -96,6 +96,86 @@ func TestCreateMR_DraftPrefix(t *testing.T) {
 	}
 }
 
+// Regression: found live on a real run — a duplicate work-phase CreateMR
+// call for a branch that already had an open MR (a reconciler re-trigger
+// racing genuine progress) got a 409 from GitLab, which the daemon
+// treated as fatal even though the actual work was already done
+// correctly. CreateMR must absorb this as idempotent success by looking
+// up the existing MR for that branch.
+func TestCreateMR_DuplicateBranch409_ReturnsExistingMR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/merge_requests"):
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":["Another open merge request already exists for this source branch: !82143"]}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.RawQuery, "source_branch=syntropy%2Fabc%2Fincrement-2"):
+			_, _ = w.Write([]byte(`[{"iid":82143,"web_url":"https://gitlab/x/-/merge_requests/82143"}]`))
+		default:
+			t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	mr, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "syntropy/abc/increment-2", TargetBranch: "main", Title: "Migrate b2c2",
+	})
+	if err != nil {
+		t.Fatalf("CreateMR should absorb the 409 as idempotent success, got error: %v", err)
+	}
+	if mr.IID != 82143 {
+		t.Errorf("want the existing MR's IID 82143, got %d", mr.IID)
+	}
+	if mr.URL != "https://gitlab/x/-/merge_requests/82143" {
+		t.Errorf("want the existing MR's URL, got %q", mr.URL)
+	}
+}
+
+// A 409 whose lookup finds nothing (or the lookup itself fails) must
+// still surface the original error — never silently swallow a real
+// conflict just because we couldn't confirm what it was.
+func TestCreateMR_409_LookupFindsNothing_SurfacesOriginalError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":["Another open merge request already exists for this source branch: !999"]}`))
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	_, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "some-branch", TargetBranch: "main", Title: "x",
+	})
+	if err == nil {
+		t.Fatal("want the original 409 surfaced when the lookup finds no matching MR")
+	}
+}
+
+// A non-409 error must never be treated as the duplicate-branch case.
+func TestCreateMR_NonConflictError_NotTreatedAsDuplicate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	_, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "x",
+	})
+	if err == nil {
+		t.Fatal("want the 500 surfaced as an error")
+	}
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusInternalServerError {
+		t.Errorf("want the original 500 apiError surfaced unchanged, got %v", err)
+	}
+}
+
 // TestCreateMR_LabelsAppliedViaFollowUpCall guards against a real GitLab
 // quirk found live: a label that doesn't already exist on the project can
 // get silently created-but-not-attached when passed inline on MR creation.

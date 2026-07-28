@@ -880,6 +880,62 @@ func TestDirectAbandon_AutoPausedRun_Cancels(t *testing.T) {
 	}
 }
 
+// Regression: found live — `syntropy resume` on a genuinely Failed run
+// (not the AutoPaused circuit-breaker case) reported "resume sent" via
+// sendControl's /control POST, which returned HTTP 200 (no error) but
+// had no actual effect, since /control's wf.Callback dispatch has no
+// registered consumer for a terminal Failed status. cmdResume must
+// detect Failed/Cancelled via the daemon's own /status and route
+// straight to directResume — the same path used for AutoPaused/daemon-
+// unreachable — instead of trusting sendControl's lack of an HTTP error
+// as proof anything happened.
+func TestCmdResume_ReachableDaemon_FailedRun_UsesDirectResumeNotControl(t *testing.T) {
+	runID := "33333333-3333-3333-3333-333333333333"
+	sp := seedStoreMulti(t, []string{runID}, refactorsweep.StatusFailed)
+
+	controlCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]runStatusResponse{
+				{RunID: runID, Status: refactorsweep.StatusFailed.String(), AutoPaused: false},
+			})
+		case "/control":
+			// If cmdResume mistakenly takes the sendControl path for a
+			// Failed run, this would fire and (per the pre-fix bug)
+			// silently succeed with no real effect.
+			controlCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request to %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := cmdResume([]string{"--daemon", srv.URL, "--store", sp, runID}); err != nil {
+		t.Fatalf("cmdResume: %v", err)
+	}
+	if controlCalled {
+		t.Error("cmdResume must not call /control for a genuinely Failed run — it has no registered callback and silently no-ops")
+	}
+
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	rec, err := rs.Lookup(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got := refactorsweep.AgentStatus(rec.Status); got != refactorsweep.StatusDiscovering {
+		t.Errorf("Status: want StatusDiscovering (revived via directResume), got %s", got)
+	}
+	if rec.RunState != workflow.RunStateRunning {
+		t.Errorf("RunState: want RunStateRunning, got %v", rec.RunState)
+	}
+}
+
 func TestDirectResume_RegularCancelledStillForcesDiscovering(t *testing.T) {
 	// Regression: the pre-existing Cancelled/Failed/StatusPaused revival
 	// path must keep its original "always restart planning" behavior —

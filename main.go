@@ -1466,6 +1466,8 @@ func cmdResume(args []string) error {
 		return errors.New("usage: syntropy resume <run-id>")
 	}
 
+	daemonSt, statusErr := daemonStatusFor(*daemonURL, runID)
+
 	// A Run auto-paused by the PauseAfterErrCount circuit breaker (ADR-0062)
 	// can't be resumed via /control's wf.Callback dispatch at all — no
 	// callback is registered for whatever business Status it was stuck in
@@ -1477,12 +1479,31 @@ func cmdResume(args []string) error {
 	// effect — the step's consumer is still actively subscribed, just
 	// filtered out by RunState, so flipping RunState back to Running is
 	// picked up on its next poll.
-	if st, err := daemonStatusFor(*daemonURL, runID); err == nil && st.AutoPaused {
+	if statusErr == nil && daemonSt.AutoPaused {
 		fallback, ok := tryStoreFallback(*storePath)
 		if !ok {
 			return fmt.Errorf("run %s is auto-paused; resuming it requires direct store access (pass --store or ensure ~/.syntropy/store.db exists)", runID)
 		}
-		return directResume(context.Background(), fallback, st.RunID)
+		return directResume(context.Background(), fallback, daemonSt.RunID)
+	}
+
+	// A genuinely terminal Run (Failed/Cancelled, not the AutoPaused case
+	// above) can't be revived via /control's "resume" verb either — that
+	// path only handles the Paused → AwaitingMerge callback (see
+	// directResume's own comment). Found live: sendControl's POST to
+	// /control still returns HTTP 200 for a Failed run (the daemon accepts
+	// the write; there's just no registered callback for a terminal status
+	// to act on it), so the pre-fix code below reported "resume sent" with
+	// no actual effect. Route straight to the direct-store-write revival
+	// path — same one AutoPaused/daemon-unreachable already use — whenever
+	// the daemon's own /status confirms the Run is Failed or Cancelled,
+	// regardless of whether the daemon itself is reachable.
+	if statusErr == nil && (daemonSt.Status == refactorsweep.StatusFailed.String() || daemonSt.Status == refactorsweep.StatusCancelled.String()) {
+		fallback, ok := tryStoreFallback(*storePath)
+		if !ok {
+			return fmt.Errorf("run %s is %s; reviving it requires direct store access (pass --store or ensure ~/.syntropy/store.db exists)", runID, daemonSt.Status)
+		}
+		return directResume(context.Background(), fallback, daemonSt.RunID)
 	}
 
 	// Try daemon first (preferred: daemon can resume Paused → AwaitingMerge).

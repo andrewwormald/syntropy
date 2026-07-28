@@ -132,3 +132,5 @@ forces or unlocks.
 | 0082 | `.syntropy.yml` fields distinguish "never asked" from "asked, declined" | Accepted | 2026-07-28 |
 | 0083 | `syntropy config check` — pure-code repo-config check, agent only for the gap | Accepted | 2026-07-28 |
 | 0084 | `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before | Accepted | 2026-07-28 |
+| 0085 | `CreateMR` absorbs a duplicate-branch conflict as idempotent success     | Accepted | 2026-07-28 |
+| 0086 | `syntropy resume` detects Failed/Cancelled before trying `/control`     | Accepted | 2026-07-28 |

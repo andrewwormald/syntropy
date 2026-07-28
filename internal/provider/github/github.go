@@ -174,6 +174,9 @@ func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provide
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
 	if err := p.doJSON(ctx, http.MethodPost, path, body, &resp); err != nil {
+		if existing, ok := p.existingMRForBranch(ctx, projectID, owner, repo, draft.Branch, err); ok {
+			return existing, nil
+		}
 		return provider.MR{}, err
 	}
 	mr := provider.MR{
@@ -714,6 +717,38 @@ func (p *Provider) doOnce(ctx context.Context, method, path string, in any) (*ht
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return p.hc.Do(req)
+}
+
+// existingMRForBranch handles GitHub's 422 "A pull request already
+// exists for owner:branch" response from CreateMR — the GitHub-side
+// equivalent of GitLab's 409 (see gitlab.Provider.existingMRForBranch
+// for the incident this fixes on both providers). GitHub reuses 422 for
+// other validation failures too (e.g. no commits between head and
+// base), so this also checks the body mentions an existing PR before
+// treating it as idempotent success — a 422 for any other reason must
+// still surface as a real error, not be masked.
+func (p *Provider) existingMRForBranch(ctx context.Context, projectID, owner, repo, branch string, createErr error) (provider.MR, bool) {
+	var apiErr *apiError
+	if !errors.As(createErr, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
+		return provider.MR{}, false
+	}
+	if !strings.Contains(apiErr.Body, "A pull request already exists") {
+		return provider.MR{}, false
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s:%s&state=open", owner, repo, owner, branch)
+	var resp []struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil || len(resp) == 0 {
+		return provider.MR{}, false
+	}
+	return provider.MR{
+		ProjectID: projectID,
+		IID:       resp[0].Number,
+		URL:       resp[0].HTMLURL,
+		Branch:    branch,
+	}, true
 }
 
 type apiError struct {
