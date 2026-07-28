@@ -621,6 +621,31 @@ func TestSetup_TitleConvention_BlankField(t *testing.T) {
 	}
 }
 
+// Regression: a title_convention explicitly recorded as setup.BlankSentinel
+// ("blank" — the user was asked and declined) must resolve to an empty
+// AgentState.TitleConvention, same as absent, so the sentinel word never
+// leaks into the runner's prompt as if it were a real convention.
+func TestSetup_TitleConvention_BlankSentinel_DoesNotLeakIntoState(t *testing.T) {
+	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
+	d := newDeps(t, fp)
+	baseRepo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRepo, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("write .syntropy.yml: %v", err)
+	}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		BaseRepo:     baseRepo,
+	})
+
+	if _, err := d.setup(t.Context(), r); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if r.Object.TitleConvention != "" {
+		t.Errorf("TitleConvention: want empty (sentinel must not leak), got %q", r.Object.TitleConvention)
+	}
+}
+
 func TestSetup_TitleConvention_NotReReadMidRun(t *testing.T) {
 	// StartedAt already set (Run past its first setup() pass) — a second
 	// invocation (retry/restart) must not re-read .syntropy.yml even though

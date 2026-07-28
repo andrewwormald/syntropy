@@ -33,8 +33,65 @@ func ReadRepoConfig(repoDir string) (RepoConfig, error) {
 type RepoConfig struct {
 	// TitleConvention is free-text guidance on how this repo likes its
 	// PR/MR titles phrased, e.g. "Conventional Commits" or "ticket ID
-	// prefix like PROJ-123: ...". Empty means no convention was set.
+	// prefix like PROJ-123: ...". Empty means the field is missing from
+	// the file entirely — this repo has never been asked (e.g. an older
+	// .syntropy.yml predating this field, or the file doesn't exist at
+	// all) — an agent following the syntropy Skill should ask the user
+	// and persist an answer. BlankSentinel means the user WAS asked and
+	// deliberately chose not to set one — don't ask again, and don't
+	// treat it as a convention to inject anywhere (see
+	// EffectiveTitleConvention).
 	TitleConvention string `yaml:"title_convention"`
+}
+
+// BlankSentinel is written to a RepoConfig field, instead of leaving it
+// as an empty string or omitting it, when the user was explicitly asked
+// and chose not to set a value. Plain "" is ambiguous between "never
+// asked" and "asked, declined" — every field in this file needs a way to
+// distinguish the two so an agent following the syntropy Skill knows
+// whether to ask again, and so new fields added in a later syntropy
+// version are correctly recognised as unasked (empty) even in an
+// existing repo's .syntropy.yml, rather than mistaken for a deliberate
+// blank.
+const BlankSentinel = "blank"
+
+// EffectiveTitleConvention returns the value to actually use when
+// building a runner prompt: the real convention if one was set, or ""
+// for both "never asked" and BlankSentinel — callers that gate a prompt
+// block on non-empty (e.g. the runner's `if req.TitleConvention != ""`)
+// should call this rather than reading TitleConvention directly, so
+// BlankSentinel never leaks into prompt text verbatim.
+func (c RepoConfig) EffectiveTitleConvention() string {
+	if c.TitleConvention == BlankSentinel {
+		return ""
+	}
+	return c.TitleConvention
+}
+
+// IsConfigured reports whether TitleConvention has been decided at all —
+// either a real convention or an explicit BlankSentinel — as opposed to
+// being absent, which means an agent following the syntropy Skill should
+// ask the user for it.
+func (c RepoConfig) IsConfigured() bool {
+	return c.TitleConvention != ""
+}
+
+// MissingFields returns the names of every recognised RepoConfig field
+// that hasn't been decided yet (see IsConfigured) — i.e. that an agent
+// following the syntropy Skill should ask the user about. Pure, cheap,
+// deterministic: no LLM invocation needed to answer "is this repo fully
+// configured" (ADR-0083) — CheckRepoConfig/`syntropy config check` calls
+// this so an agent can gate a conversational ask on its output instead of
+// reading and reasoning about the YAML file itself every time.
+//
+// Add a case here for every new field RepoConfig grows — this is the one
+// place the "which fields exist" list needs to stay current.
+func MissingFields(cfg RepoConfig) []string {
+	var missing []string
+	if !cfg.IsConfigured() {
+		missing = append(missing, "title_convention")
+	}
+	return missing
 }
 
 // RepoConfigPath returns the `.syntropy.yml` path for the given repo root.

@@ -129,3 +129,5 @@ forces or unlocks.
 | 0079 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |
 | 0080 | `GetMRState` surfaces merge-conflict status alongside lifecycle state   | Accepted | 2026-07-27 |
 | 0081 | Poller dispatches `EventMRConflict` from `MRState.HasConflict`         | Accepted | 2026-07-27 |
+| 0082 | `.syntropy.yml` fields distinguish "never asked" from "asked, declined" | Accepted | 2026-07-28 |
+| 0083 | `syntropy config check` — pure-code repo-config check, agent only for the gap | Accepted | 2026-07-28 |

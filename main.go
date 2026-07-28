@@ -67,6 +67,7 @@ var commands = map[string]command{
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
 	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model (see ADR-0002, ADR-0051)", run: cmdSetup},
+	"config":  {usage: "check a repo's .syntropy.yml for missing fields (see ADR-0083)", run: cmdConfig},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
 
@@ -113,7 +114,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "syntropy — bulk-refactor sweep daemon\n\nusage: syntropy <command> [flags]\n\ncommands:\n")
-	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "setup", "version"} {
+	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "setup", "config", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
 	fmt.Fprintf(w, "\nrun `syntropy <command> -h` for command-specific flags.\n")
@@ -1704,6 +1705,74 @@ func cmdPhrases(args []string) error {
 		return fmt.Errorf("syntropy phrases %s: not implemented in scaffold", args[0])
 	default:
 		return fmt.Errorf("unknown subcommand %q (try list, promote)", args[0])
+	}
+}
+
+// checkRepoConfig is cmdConfig's testable core: reads repoDir's
+// .syntropy.yml and reports its missing fields, writing the same
+// human/agent-readable summary cmdConfig prints to stdout, but returning
+// the missing-field list instead of calling os.Exit — split out so tests
+// can assert its output/return value in-process. See ADR-0083.
+func checkRepoConfig(repoDir string, w io.Writer) ([]string, error) {
+	cfg, err := setup.ReadRepoConfig(repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("read repo config: %w", err)
+	}
+	missing := setup.MissingFields(cfg)
+	if len(missing) == 0 {
+		fmt.Fprintf(w, "OK: %s has every recognised field configured\n", setup.RepoConfigPath(repoDir))
+		return nil, nil
+	}
+	fmt.Fprintf(w, "MISSING: %s is missing %d field(s):\n", setup.RepoConfigPath(repoDir), len(missing))
+	for _, f := range missing {
+		fmt.Fprintf(w, "  - %s\n", f)
+	}
+	fmt.Fprintln(w, "Ask the user about each field above, then run `syntropy setup --title-convention \"<answer>\"` (or `... blank` if they decline) to persist it.")
+	return missing, nil
+}
+
+// cmdConfig checks a repo's .syntropy.yml for missing fields, purely via
+// code — no LLM invocation. ADR-0083: an agent following the syntropy
+// Skill should run this before triggering a spec instead of reading and
+// reasoning about the YAML file itself; only the fields this prints as
+// missing are worth spending a conversational turn on.
+//
+// usage: syntropy config check [--repo <dir>]
+//
+// Exit code doubles as a cheap machine-readable signal alongside stdout:
+// 0 means every recognised field is configured (real value or
+// setup.BlankSentinel); 1 means at least one field is missing and needs
+// asking about.
+func cmdConfig(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Println("usage: syntropy config check [--repo <dir>]")
+		return nil
+	}
+	switch args[0] {
+	case "check":
+		fs := flag.NewFlagSet("config check", flag.ExitOnError)
+		repoFlag := fs.String("repo", "", "repo root to check (default: current directory)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		repoDir := *repoFlag
+		if repoDir == "" {
+			var err error
+			repoDir, err = os.Getwd()
+			if err != nil {
+				return fmt.Errorf("cwd: %w", err)
+			}
+		}
+		missing, err := checkRepoConfig(repoDir, os.Stdout)
+		if err != nil {
+			return err
+		}
+		if len(missing) > 0 {
+			os.Exit(1)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown subcommand %q (try check)", args[0])
 	}
 }
 

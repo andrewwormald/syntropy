@@ -139,6 +139,48 @@ func TestReadRepoConfig_BlankField(t *testing.T) {
 	}
 }
 
+// --- BlankSentinel semantics ---
+
+func TestReadRepoConfig_BlankSentinel_IsConfiguredButHasNoEffectiveValue(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(RepoConfigPath(dir), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	cfg, err := ReadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TitleConvention != BlankSentinel {
+		t.Fatalf("got %q, want the raw sentinel %q preserved on the struct", cfg.TitleConvention, BlankSentinel)
+	}
+	if !cfg.IsConfigured() {
+		t.Error("a field explicitly recorded as blank must count as configured — don't re-ask")
+	}
+	if got := cfg.EffectiveTitleConvention(); got != "" {
+		t.Errorf("EffectiveTitleConvention() = %q, want empty — the sentinel must never leak as a real value", got)
+	}
+}
+
+func TestRepoConfig_MissingField_IsNotConfigured(t *testing.T) {
+	var cfg RepoConfig // never-asked: zero value, as if the field were absent
+	if cfg.IsConfigured() {
+		t.Error("an absent/never-asked field must not report as configured")
+	}
+	if got := cfg.EffectiveTitleConvention(); got != "" {
+		t.Errorf("EffectiveTitleConvention() = %q, want empty for an unconfigured field", got)
+	}
+}
+
+func TestRepoConfig_RealValue_IsConfiguredAndEffective(t *testing.T) {
+	cfg := RepoConfig{TitleConvention: "Conventional Commits"}
+	if !cfg.IsConfigured() {
+		t.Error("a real value must count as configured")
+	}
+	if got := cfg.EffectiveTitleConvention(); got != "Conventional Commits" {
+		t.Errorf("EffectiveTitleConvention() = %q, want the real value unchanged", got)
+	}
+}
+
 func TestWriteRepoConfig_ForceOverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := RepoConfigPath(dir)
@@ -159,5 +201,28 @@ func TestWriteRepoConfig_ForceOverwritesExisting(t *testing.T) {
 	}
 	if string(data) != "title_convention: new convention\n" {
 		t.Fatalf("got %q, want overwritten content", string(data))
+	}
+}
+
+// --- MissingFields ---
+
+func TestMissingFields_UnconfiguredReportsTitleConvention(t *testing.T) {
+	got := MissingFields(RepoConfig{})
+	if len(got) != 1 || got[0] != "title_convention" {
+		t.Fatalf("got %v, want [title_convention]", got)
+	}
+}
+
+func TestMissingFields_RealValueReportsNothing(t *testing.T) {
+	got := MissingFields(RepoConfig{TitleConvention: "Conventional Commits"})
+	if len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}
+
+func TestMissingFields_BlankSentinelReportsNothing(t *testing.T) {
+	got := MissingFields(RepoConfig{TitleConvention: BlankSentinel})
+	if len(got) != 0 {
+		t.Fatalf("got %v, want none — blank counts as decided", got)
 	}
 }
