@@ -131,3 +131,4 @@ forces or unlocks.
 | 0081 | Poller dispatches `EventMRConflict` from `MRState.HasConflict`         | Accepted | 2026-07-27 |
 | 0082 | `.syntropy.yml` fields distinguish "never asked" from "asked, declined" | Accepted | 2026-07-28 |
 | 0083 | `syntropy config check` — pure-code repo-config check, agent only for the gap | Accepted | 2026-07-28 |
+| 0084 | `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before | Accepted | 2026-07-28 |
