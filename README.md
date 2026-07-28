@@ -84,6 +84,16 @@ You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo wi
 
 The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `./syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
 
+### Installing a prebuilt binary
+
+Instead of building from source, download the archive matching your OS/arch from the [GitHub Releases](https://github.com/andrewwormald/syntropy/releases) page (`syntropy_<version>_<os>_<arch>.tar.gz`, e.g. `darwin_arm64` or `linux_amd64`), extract it, and put the `syntropy` binary on your `$PATH`:
+
+```bash
+tar -xzf syntropy_*_darwin_arm64.tar.gz
+chmod +x syntropy
+mv syntropy /usr/local/bin/
+```
+
 ```bash
 # Write a spec.
 cat > ~/syntropy-specs/migrate.spec.md <<'YAML'
@@ -104,7 +114,7 @@ For each service still importing `internal/legacy`, switch to
 `internal/v2`. Preserve public function signatures.
 YAML
 
-# Build + start the daemon (poll mode; no public URL needed).
+# Build from source (skip if you installed a prebuilt binary above) + start the daemon (poll mode; no public URL needed).
 go build -o syntropy .
 ./syntropy daemon --commit-author "Your Name" --commit-email "you@example.com" &
 
