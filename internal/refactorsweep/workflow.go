@@ -1038,7 +1038,8 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 
 	// AwaitingAbandonConfirm has the most restrictive semantics: only a
-	// second /syntropy abandon from the author confirms; ANY other event
+	// second /syntropy abandon (or a plain "yes"-shaped reply — see
+	// isAffirmativeConfirmation) from the author confirms; ANY other event
 	// drops the confirmation window. Handle before the generic control-
 	// command path so cmdAbandon sees r.Status == AwaitingAbandonConfirm.
 	if r.Status == StatusAwaitingAbandonConfirm {
@@ -1047,6 +1048,10 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 			if verb == "abandon" {
 				d.reactToNote(ctx, r, ev)
 				return d.handleControlCommand(ctx, r, ev)
+			}
+			if isAffirmativeConfirmation(ev.Note.Body) {
+				d.reactToNote(ctx, r, ev)
+				return d.cmdAbandon(ctx, r, ev, "")
 			}
 		}
 		return d.dropAbandonConfirm(ctx, r, ev), nil

@@ -110,6 +110,25 @@ func parseControlVerb(body string) (verb, args string) {
 	return strings.ToLower(s[:i]), strings.TrimSpace(s[i:])
 }
 
+// abandonConfirmWords are the plain-language replies StatusAwaitingAbandonConfirm
+// accepts as confirmation, alongside repeating "/syntropy abandon" itself.
+// Found live: the confirmation prompt asks "Are you sure?" — a yes/no
+// question — but originally only accepted the exact command again, which
+// reads as a different, higher-effort action than answering yes/no.
+// Trimmed, trailing punctuation stripped, case-insensitive.
+var abandonConfirmWords = map[string]bool{
+	"yes": true, "y": true, "confirm": true, "confirmed": true,
+}
+
+// isAffirmativeConfirmation reports whether body is one of
+// abandonConfirmWords, ignoring surrounding whitespace, case, and a single
+// trailing '.'/'!'/'?'.
+func isAffirmativeConfirmation(body string) bool {
+	s := strings.ToLower(strings.TrimSpace(body))
+	s = strings.TrimRight(s, ".!?")
+	return abandonConfirmWords[s]
+}
+
 func (d *Deps) handleControlCommand(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	verb, args := parseControlVerb(ev.Note.Body)
 	switch verb {
@@ -166,7 +185,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 
 	// First tap — request confirmation.
 	r.Object.AbandonRequestedAt = time.Now()
-	body := fmt.Sprintf("⚠️ @%s requested to abandon this Run. **Are you sure?**\n\nReply `/syntropy abandon` again within 12h to confirm; any other activity cancels.",
+	body := fmt.Sprintf("⚠️ @%s requested to abandon this Run. **Are you sure?**\n\nReply `yes` (or `/syntropy abandon` again) within 12h to confirm; any other activity cancels.",
 		ev.Author.Handle)
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
