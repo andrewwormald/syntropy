@@ -2,7 +2,7 @@
 
 Spec files (`*.spec.md`) drive `everflow start --spec <path>`. Each spec is a YAML frontmatter block + a markdown body that the planner reads to decompose a goal into a chain of small MRs.
 
-This directory holds specs that have driven Runs against `andrewwormald/everflow` itself (dogfooding). They stay in the repo as historical artefacts and as reference examples for how to structure your own specs.
+This directory holds specs that have driven Runs against `andrewwormald/syntropy` itself (dogfooding). They stay in the repo as historical artefacts and as reference examples for how to structure your own specs. The files below predate the everflow → syntropy rename (ADR-0055); their own "Notes" describe what actually happened at the time under the old name and are left as-is — only this surrounding guidance is kept current.
 
 ## Anatomy
 
@@ -40,6 +40,6 @@ markdown body on every plan call to decide the next increment.
 2. In the body, be explicit about scope — what changes, what doesn't. Include a "Done when" section with observable criteria.
 3. Reference ADRs where relevant so the planner has context.
 4. For safety, keep `draft_mrs: true` on any spec that runs against a shared repo.
-5. Save under `specs/<short-slug>.spec.md` and trigger with `./everflow start --spec specs/<slug>.spec.md`.
+5. Save under `specs/<short-slug>.spec.md` and trigger with `./syntropy start --spec specs/<slug>.spec.md`.
 
 See the existing files for concrete examples.

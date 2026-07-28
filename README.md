@@ -123,7 +123,7 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 | [`AGENTS.md`](AGENTS.md) | Working rules for AI contributors |
 | [`decisions/`](decisions/) | Architecture Decision Records — every meaningful choice |
 | [`logo/`](logo/) | Brand assets |
-| `main.go` | CLI entrypoint: `daemon`, `start`, `status`, `list`, `abandon`, `resume`, `phrases`, `setup`, `version` |
+| `main.go` | CLI entrypoint: `daemon`, `start`, `status`, `list`, `abandon`, `resume`, `phrases`, `setup`, `config`, `version` |
 | [`internal/refactorsweep/`](internal/refactorsweep/) | State machine + step bodies + control verbs |
 | [`internal/provider/{gitlab,github}/`](internal/provider/) | Platform adapters |
 | [`internal/runner/claude/`](internal/runner/claude/) | Claude shell-out runner with decision-marker parsing |

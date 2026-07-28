@@ -1,0 +1,1 @@
+title_convention: 'type(scope): short imperative description, matching this repo''s Conventional Commits git history. Example: fix(poller): redispatch terminal MR-state events until the unit leaves InFlight.'
