@@ -228,4 +228,4 @@ To help diagnose an issue, collect:
 5. **The spec file** that triggered the Run (if applicable)
 6. **ADR references** for any failure mode matching a known design decision
 
-File bugs at: https://github.com/andrewwormald/everflow/issues
+File bugs at: https://github.com/andrewwormald/syntropy/issues
