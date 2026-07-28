@@ -308,7 +308,11 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 		if err != nil {
 			return StatusFailed, fmt.Errorf("setup: read repo config: %w", err)
 		}
-		r.Object.TitleConvention = cfg.TitleConvention
+		// EffectiveTitleConvention, not the raw field: a user who was
+		// asked and deliberately left this blank (setup.BlankSentinel)
+		// must not have that sentinel leak into the runner's prompt as
+		// if it were a real convention (ADR-00xx).
+		r.Object.TitleConvention = cfg.EffectiveTitleConvention()
 	}
 
 	// Record when this Run first entered Discovering so MaxRuntime can be

@@ -592,6 +592,62 @@ func TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce(t *testing.T
 	}
 }
 
+// --- config check (ADR-0083) ---
+
+func TestCheckRepoConfig_AbsentFile_ReportsMissing(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	missing, err := checkRepoConfig(dir, &buf)
+	if err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != "title_convention" {
+		t.Fatalf("got %v, want [title_convention]", missing)
+	}
+	if !strings.Contains(buf.String(), "MISSING") || !strings.Contains(buf.String(), "title_convention") {
+		t.Errorf("output should report the missing field; got %q", buf.String())
+	}
+}
+
+func TestCheckRepoConfig_RealValue_ReportsOK(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+	var buf bytes.Buffer
+	missing, err := checkRepoConfig(dir, &buf)
+	if err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("got %v, want no missing fields", missing)
+	}
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("output should report OK; got %q", buf.String())
+	}
+}
+
+func TestCheckRepoConfig_BlankSentinel_ReportsOK(t *testing.T) {
+	// A field explicitly recorded as setup.BlankSentinel ("blank") must
+	// count as configured — the user already declined it, don't re-flag
+	// it as missing.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+	var buf bytes.Buffer
+	missing, err := checkRepoConfig(dir, &buf)
+	if err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("got %v, want no missing fields (blank counts as decided)", missing)
+	}
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("output should report OK; got %q", buf.String())
+	}
+}
+
 // startTriggerCapture spins up a fake daemon that records the decoded
 // triggerRequest of the last /trigger POST it receives.
 func startTriggerCapture(t *testing.T) (url string, got *triggerRequest) {
