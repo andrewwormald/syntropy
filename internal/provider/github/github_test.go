@@ -942,3 +942,61 @@ func TestDoGraphQL_TokenSource_ResolvedFreshOnEveryRequest(t *testing.T) {
 		t.Errorf("2nd request: want %q, got %q — TokenSource should be re-resolved every request, not cached", "Bearer refreshed-token", gotAuthHeaders[1])
 	}
 }
+
+// --- CreateMR idempotency on duplicate-branch conflict ---
+
+// Regression: the GitHub-side equivalent of the GitLab 409 incident (see
+// gitlab.TestCreateMR_DuplicateBranch409_ReturnsExistingMR) — GitHub
+// returns 422 "A pull request already exists for owner:branch" instead
+// of a 409. CreateMR must absorb this as idempotent success.
+func TestCreateMR_DuplicateBranch422_ReturnsExistingMR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for owner:some-branch."}]}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.RawQuery, "head=owner:some-branch"):
+			_, _ = w.Write([]byte(`[{"number":42,"html_url":"https://github.com/owner/repo/pull/42"}]`))
+		default:
+			t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	mr, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "some-branch", TargetBranch: "main", Title: "x",
+	})
+	if err != nil {
+		t.Fatalf("CreateMR should absorb the 422-duplicate as idempotent success, got error: %v", err)
+	}
+	if mr.IID != 42 {
+		t.Errorf("want the existing PR's number 42, got %d", mr.IID)
+	}
+	if mr.URL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("want the existing PR's URL, got %q", mr.URL)
+	}
+}
+
+// A 422 for any OTHER reason (not an existing-PR conflict) must still
+// surface as a real error — GitHub reuses 422 for validation failures in
+// general, so this must not be treated as the duplicate-branch case.
+func TestCreateMR_422OtherReason_NotTreatedAsDuplicate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between main and some-branch."}]}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	_, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "some-branch", TargetBranch: "main", Title: "x",
+	})
+	if err == nil {
+		t.Fatal("want the 422 surfaced as an error when it's not an existing-PR conflict")
+	}
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
+		t.Errorf("want the original 422 apiError surfaced unchanged, got %v", err)
+	}
+}

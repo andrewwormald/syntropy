@@ -196,6 +196,9 @@ func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provide
 	}
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests", url.PathEscape(projectID))
 	if err := p.doJSON(ctx, http.MethodPost, path, body, &resp); err != nil {
+		if existing, ok := p.existingMRForBranch(ctx, projectID, draft.Branch, err); ok {
+			return existing, nil
+		}
 		return provider.MR{}, err
 	}
 	mr := provider.MR{
@@ -436,6 +439,41 @@ func (p *Provider) doOnce(ctx context.Context, method, path string, in any) (*ht
 	}
 	req.Header.Set("Accept", "application/json")
 	return p.hc.Do(req)
+}
+
+// existingMRForBranch handles GitLab's 409 "Another open merge request
+// already exists for this source branch" response from CreateMR. Found
+// live: a duplicate work-phase invocation for the same unit (e.g. a
+// reconciler re-trigger racing genuine progress) retried CreateMR after
+// an earlier call had already succeeded and pushed the same branch —
+// GitLab correctly rejected the second create, but the daemon treated
+// that as a fatal error even though the actual work (the MR) already
+// existed and was correct. Treats a 409 here as idempotent success:
+// look up the MR GitLab says already exists and return it instead of
+// erroring. Returns ok=false for any other status (or if the lookup
+// itself fails/finds nothing), in which case the caller should surface
+// createErr unchanged — this must never mask a genuinely different
+// conflict as success.
+func (p *Provider) existingMRForBranch(ctx context.Context, projectID, branch string, createErr error) (provider.MR, bool) {
+	var apiErr *apiError
+	if !errors.As(createErr, &apiErr) || apiErr.Status != http.StatusConflict {
+		return provider.MR{}, false
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests?source_branch=%s&state=opened",
+		url.PathEscape(projectID), url.QueryEscape(branch))
+	var resp []struct {
+		IID    int    `json:"iid"`
+		WebURL string `json:"web_url"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil || len(resp) == 0 {
+		return provider.MR{}, false
+	}
+	return provider.MR{
+		ProjectID: projectID,
+		IID:       resp[0].IID,
+		URL:       resp[0].WebURL,
+		Branch:    branch,
+	}, true
 }
 
 // apiError carries GitLab's structured error responses for surfacing useful
