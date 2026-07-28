@@ -53,7 +53,7 @@ re-triggers them:
   own.
 - `main.go` wires this in as `buildSweeper`, run alongside the daemon's
   other background loops, with the threshold exposed as
-  `--reconciler-stuck-threshold` (default 20 minutes) rather than
+  `--reconciler-stuck-threshold` (default 30 minutes) rather than
   hardcoded, since the right value depends on how long a legitimate
   agent turn can take and that's expected to change as usage grows.
 
@@ -96,7 +96,7 @@ re-triggers them:
 - `--reconciler-stuck-threshold` is one more operational knob: setting
   it too low re-triggers legitimately slow turns more often than
   useful (still harmless per the idempotency guard, but noisy in logs);
-  too high leaves a genuinely stuck Run silent for longer. 20 minutes
+  too high leaves a genuinely stuck Run silent for longer. 30 minutes
   is a starting guess, not a measured value — revisit if production
   usage shows agent turns routinely exceeding it.
 - `Scan` pages the full `RunStateRunning` set every tick via
