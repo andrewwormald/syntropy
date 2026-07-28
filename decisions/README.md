@@ -136,3 +136,4 @@ forces or unlocks.
 | 0086 | `syntropy resume` detects Failed/Cancelled before trying `/control`     | Accepted | 2026-07-28 |
 | 0087 | Abandon confirmation accepts a plain "yes", not just the repeated command | Accepted | 2026-07-28 |
 | 0088 | goreleaser release workflow, no Homebrew tap for now                    | Accepted | 2026-07-28 |
+| 0089 | `DecisionNoChange` replies to a human comment, stays silent on CI events | Accepted | 2026-07-28 |

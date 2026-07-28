@@ -2360,8 +2360,37 @@ func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWorkLocally(t *testing.T)
 	if len(g.pushes) != 0 {
 		t.Errorf("DecisionNoChange must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
+	// ADR-0089: a real human comment (EventNoteAdded) now gets an actual
+	// reply with the runner's reasoning — the original blanket silence
+	// predates isOwnEcho/RecentOutgoingHashes (ADR-0035), which already
+	// covers the webhook-loop concern this used to guard against.
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "Nothing actionable") {
+		t.Errorf("DecisionNoChange on a human comment must post the runner's reasoning; comments=%+v", fp.comments)
+	}
+}
+
+// fix_ci (EventPipelineFailed) DecisionNoChange stays silent — a CI
+// failure judged as needing no action can recur every retry, so posting
+// "no changes needed" on every one would be noise a human never asked
+// for, unlike a one-off comment reply.
+func TestResume_PipelineFailed_DecisionNoChange_StaysSilent(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed, MR: mr,
+		Pipeline: provider.Pipeline{ID: 1, Status: "failed"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge on DecisionNoChange, got %v", next)
+	}
 	if len(fp.comments) != 0 {
-		t.Errorf("DecisionNoChange must still not post a top-level comment (webhook-loop guard); comments=%+v", fp.comments)
+		t.Errorf("DecisionNoChange on a CI event must still stay silent; comments=%+v", fp.comments)
 	}
 }
 
