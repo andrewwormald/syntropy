@@ -7,7 +7,7 @@
 
 ADR-0053 added `internal/reconciler`'s sweep, which every `Interval`
 (default 30s) re-triggers any Run whose `LastProgress` is older than
-`Threshold` (default 10 minutes). ADR-0053's idempotency argument —
+`Threshold` (default 20 minutes). ADR-0053's idempotency argument —
 that a re-trigger is a harmless no-op once the record's version has
 moved on — assumes the Run either wakes up and advances, or is a
 genuinely wedged step that a retrigger can't fix either way. It didn't
@@ -49,9 +49,9 @@ as stuck.
   operational knob, not hardcoded, because the right value depends on
   operational experience.
 
-**3-minute cooldown vs. 10-minute stuck threshold**: the two knobs
+**3-minute cooldown vs. 20-minute stuck threshold**: the two knobs
 answer different questions and are deliberately not the same value.
-`Threshold` (10 minutes) asks "how long can a legitimately slow agent
+`Threshold` (20 minutes) asks "how long can a legitimately slow agent
 turn run before we suspect it's actually stuck?" — set generously to
 avoid false positives against real work. `RetriggerCooldown` (3
 minutes) asks "once we've already acted on a stuck Run, how long
@@ -62,7 +62,7 @@ the first can't possibly do anything the first attempt didn't. 3
 minutes is long enough that the sweep isn't re-sending on every 30s
 tick for a still-stuck Run, short enough that a Run which does recover
 mid-cooldown isn't made to wait anywhere near as long as the original
-10-minute detection threshold before a further stuck episode gets
+20-minute detection threshold before a further stuck episode gets
 picked up again.
 
 ## Alternatives considered

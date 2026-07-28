@@ -123,7 +123,7 @@ func printUsage(w io.Writer) {
 // reconcilerStuckThresholdDefault is the --reconciler-stuck-threshold flag's
 // default: how long a Run may sit in Working/Discovering with no progress
 // before the reconciler re-triggers it.
-const reconcilerStuckThresholdDefault = 10 * time.Minute
+const reconcilerStuckThresholdDefault = 20 * time.Minute
 
 // reconcilerRetriggerCooldownDefault is the --reconciler-retrigger-cooldown
 // flag's default: how long a re-triggered RunID is left alone before the
