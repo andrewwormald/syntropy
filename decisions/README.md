@@ -129,3 +129,4 @@ forces or unlocks.
 | 0079 | Reactive 401 retry-with-forced-refresh in the provider `do()` methods   | Accepted | 2026-07-27 |
 | 0080 | `GetMRState` surfaces merge-conflict status alongside lifecycle state   | Accepted | 2026-07-27 |
 | 0081 | Poller dispatches `EventMRConflict` from `MRState.HasConflict`         | Accepted | 2026-07-27 |
+| 0082 | `EventMRConflict` invokes the resolve-conflict subagent after the Paused gate, not before | Accepted | 2026-07-28 |
