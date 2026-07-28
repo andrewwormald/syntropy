@@ -57,9 +57,11 @@ type Request struct {
 	// invocations so the runner shapes MR titles accordingly.
 	TitleConvention string
 
-	// Replayed inputs for "address comment" / "fix CI" invocations:
-	CommentBody string // populated for address-comment invocations
-	CIFailure   string // populated for fix-CI invocations (last ~2KB of log)
+	// Replayed inputs for "address comment" / "fix CI" / "resolve conflict"
+	// invocations:
+	CommentBody   string   // populated for address-comment invocations
+	CIFailure     string   // populated for fix-CI invocations (last ~2KB of log)
+	ConflictFiles []string // populated for resolve-conflict invocations
 
 	// HookFailure is populated when this invocation is a retry after the
 	// target repo's own pre-commit hooks rejected a prior commit attempt

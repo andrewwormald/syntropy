@@ -243,6 +243,8 @@ type fakeGit struct {
 	diffStat   *string // nil → default "1 file changed, 5 insertions(+)"
 	isolated   *bool   // IsIsolatedWorktree; nil → default true
 	isolateErr error
+	conflictedFiles    []string
+	conflictedFilesErr error
 
 	ensures      []ensureCall
 	resets       []string
@@ -334,6 +336,15 @@ func (g *fakeGit) RemoveWorktree(_ context.Context, _, dir string) error {
 	defer g.mu.Unlock()
 	g.removes = append(g.removes, dir)
 	return nil
+}
+
+func (g *fakeGit) ConflictedFiles(_ context.Context, _ string) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.conflictedFilesErr != nil {
+		return nil, g.conflictedFilesErr
+	}
+	return g.conflictedFiles, nil
 }
 
 func (g *fakeGit) DiffShortstat(_ context.Context, _, _ string) (string, error) {
@@ -2386,6 +2397,63 @@ func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
 	}
 	if !strings.Contains(fr.calls[0].CIFailure, "test 3/5") {
 		t.Errorf("CIFailure should mention failed job: %q", fr.calls[0].CIFailure)
+	}
+}
+
+// TestResume_MRConflict_InvokesSubagent asserts EventMRConflict goes straight
+// to invokeForEvent (no cheap filter step, since detection is already
+// deterministic off GetMRState), and that the conflicted files git reports
+// after SyncWithBase are threaded through to the runner as ConflictFiles.
+func TestResume_MRConflict_InvokesSubagent(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.Git = &fakeGit{conflictedFiles: []string{"a.go", "b.go"}}
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "Resolved conflict",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{Kind: provider.EventMRConflict, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be called; got %d calls", len(fr.calls))
+	}
+	if got := fr.calls[0].ConflictFiles; len(got) != 2 || got[0] != "a.go" || got[1] != "b.go" {
+		t.Errorf("ConflictFiles not propagated to runner: %v", got)
+	}
+	if fr.calls[0].SkillCommand != "/syntropy-resolve-conflict u" {
+		t.Errorf("SkillCommand: got %q", fr.calls[0].SkillCommand)
+	}
+}
+
+// TestResume_MRConflict_WhilePaused_StaysPaused asserts EventMRConflict is
+// gated the same as address_comment/fix_ci — it does NOT bypass the Paused
+// early-return the way MRMerged/MRClosed lifecycle truth does.
+func TestResume_MRConflict_WhilePaused_StaysPaused(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+
+	ev := provider.Event{Kind: provider.EventMRConflict, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner should not be invoked while paused; got %d calls", len(fr.calls))
 	}
 }
 

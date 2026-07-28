@@ -222,10 +222,11 @@ type Turn struct {
 type Phase string
 
 const (
-	PhasePlan           Phase = "plan"
-	PhaseWork           Phase = "work"
-	PhaseAddressComment Phase = "address_comment"
-	PhaseFixCI          Phase = "fix_ci"
+	PhasePlan            Phase = "plan"
+	PhaseWork            Phase = "work"
+	PhaseAddressComment  Phase = "address_comment"
+	PhaseFixCI           Phase = "fix_ci"
+	PhaseResolveConflict Phase = "resolve_conflict"
 )
 
 // Decision is re-exported from internal/runner as an alias so step-body

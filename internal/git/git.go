@@ -93,6 +93,13 @@ type Git interface {
 	// etc.) are returned as errors.
 	SyncWithBase(ctx context.Context, dir, baseBranch string) error
 
+	// ConflictedFiles lists the paths git currently reports as unmerged in
+	// `dir` (diff --diff-filter=U), i.e. the files left conflicted by a prior
+	// SyncWithBase merge. Called after SyncWithBase so the runner's conflict-
+	// resolution turn knows exactly which files to look at instead of
+	// re-deriving it from a full worktree scan.
+	ConflictedFiles(ctx context.Context, dir string) ([]string, error)
+
 	// DiffShortstat returns the `--shortstat` summary of commits reachable from
 	// HEAD but not from origin/<baseBranch>, e.g.
 	// "3 files changed, 12 insertions(+), 4 deletions(-)".
@@ -447,6 +454,18 @@ func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) erro
 		return fmt.Errorf("SyncWithBase: merge: %w", err)
 	}
 	return nil
+}
+
+func (g *ExecGit) ConflictedFiles(ctx context.Context, dir string) ([]string, error) {
+	out, err := g.runOut(ctx, dir, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil, fmt.Errorf("ConflictedFiles: %w", err)
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
 }
 
 func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (string, error) {

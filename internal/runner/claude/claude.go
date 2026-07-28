@@ -3,7 +3,8 @@
 // ADR-0004 for the original "shell out, not the SDK" decision.
 //
 // The adapter is dumb: it composes a prompt from the runner.Request
-// fields (Goal, Worktree, UnitID, CommentBody, CIFailure, HookFailure), appends a
+// fields (Goal, Worktree, UnitID, CommentBody, CIFailure, ConflictFiles,
+// HookFailure), appends a
 // decision-marker instruction, runs `claude -p --output-format json`,
 // and parses the JSON envelope for token counts and the decision marker
 // embedded in the result text. It does not interpret SkillCommand — the
@@ -293,6 +294,9 @@ func BuildPrompt(req runner.Request) string {
 	}
 	if req.CIFailure != "" {
 		fmt.Fprintf(&b, "## CI failure to investigate\n\n```\n%s\n```\n\n", req.CIFailure)
+	}
+	if len(req.ConflictFiles) > 0 {
+		fmt.Fprintf(&b, "## Merge conflict to resolve\n\nThis branch has a merge conflict with base in the following files:\n\n```\n%s\n```\n\n", strings.Join(req.ConflictFiles, "\n"))
 	}
 	if req.HookFailure != "" {
 		fmt.Fprintf(&b, "## Commit rejected by pre-commit hook\n\n```\n%s\n```\n\n%s", req.HookFailure, hookFailureGuidance)
