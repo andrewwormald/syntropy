@@ -73,6 +73,9 @@ func (g *fakeGit) RemoveWorktree(_ context.Context, _, dir string) error {
 func (g *fakeGit) SyncWithBase(context.Context, string, string) error {
 	panic("not used by retention")
 }
+func (g *fakeGit) ConflictedFiles(context.Context, string) ([]string, error) {
+	panic("not used by retention")
+}
 func (g *fakeGit) DiffShortstat(context.Context, string, string) (string, error) {
 	panic("not used by retention")
 }

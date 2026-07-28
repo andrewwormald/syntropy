@@ -1106,6 +1106,17 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return StatusAwaitingMerge, nil
 	}
 
+	// EventMRConflict is synthetic and deterministic (ADR-0080/ADR-0081):
+	// the poller already established there's a conflict via GetMRState, so
+	// there's nothing for the cheap filter to decide — go straight to the
+	// runner, same as NoteAdded/PipelineFailed do once the filter picks
+	// OutcomeInvokeSubagent. Placed after the Paused gate above (unlike
+	// MRMerged/MRClosed), since a conflict is not lifecycle truth that
+	// should override whatever the Run is paused about.
+	if ev.Kind == provider.EventMRConflict {
+		return d.invokeForEvent(ctx, r, unitID, ev)
+	}
+
 	// Remaining informational lifecycle events (MRMerged/MRClosed are
 	// already handled above, before the Paused gate).
 	switch ev.Kind {
@@ -1229,6 +1240,21 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		req.CIFailure = formatCIFailure(ev.Pipeline)
 		req.SkillCommand = fmt.Sprintf("/syntropy-fix-ci %s", unitID)
 		phase = PhaseFixCI
+	case provider.EventMRConflict:
+		// SyncWithBase above already merged origin/<base> and left any
+		// conflicting paths unmerged in the worktree; list them so the
+		// runner knows exactly what to resolve instead of re-deriving it.
+		files, cErr := d.Git.ConflictedFiles(ctx, worktree)
+		if cErr != nil {
+			mr := r.Object.InFlight[unitID]
+			r.Object.PauseReason = fmt.Sprintf("couldn't list conflicted files before handling %s: %v", ev.Kind, cErr)
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				fmt.Sprintf("⚠️ Paused — couldn't list conflicted files for this branch: `%v`. Reply `/syntropy retry` after fixing.", cErr))
+			return StatusPaused, nil
+		}
+		req.ConflictFiles = files
+		req.SkillCommand = fmt.Sprintf("/syntropy-resolve-conflict %s", unitID)
+		phase = PhaseResolveConflict
 	default:
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unexpected event kind %s", ev.Kind)
 	}
@@ -1815,6 +1841,8 @@ func buildCommitMessage(phase Phase, unitID string, ev provider.Event, runID str
 		subject = fmt.Sprintf("Address review feedback on %s from @%s", unitID, who)
 	case PhaseFixCI:
 		subject = fmt.Sprintf("Fix CI on %s (pipeline %d)", unitID, ev.Pipeline.ID)
+	case PhaseResolveConflict:
+		subject = fmt.Sprintf("Resolve merge conflict on %s", unitID)
 	default:
 		subject = fmt.Sprintf("%s on %s", phase, unitID)
 	}
