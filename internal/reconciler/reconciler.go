@@ -32,19 +32,37 @@ func IsStuck(status refactorsweep.AgentStatus, lastProgress time.Time, now time.
 }
 
 // LastProgress returns when state last made progress: the EndedAt of the
-// last Turn in state.History, or its StartedAt if the turn is still
-// in-flight (EndedAt zero). If History is empty, it returns fallback
-// (typically the Run record's own timestamp), since a Run with no turns
-// yet has no history to derive progress from.
-func LastProgress(state refactorsweep.AgentState, fallback time.Time) time.Time {
-	if len(state.History) == 0 {
-		return fallback
+// last Turn in state.History (or its StartedAt if still in-flight,
+// EndedAt zero), but never earlier than recordUpdatedAt — the Run
+// record's own store-level UpdatedAt, which advances on every write to
+// the record, including one that doesn't append a Turn at all (e.g.
+// directResume reviving a Failed/Cancelled Run back to Discovering).
+//
+// Found live: a Run resumed from Failed days after its last real Turn
+// was immediately re-flagged as stuck by the reconciler, because History
+// still pointed at that days-old timestamp — the resume itself wasn't
+// recognised as "something happened here" at all. The reconciler then
+// re-triggered it repeatedly (every RetriggerCooldown window) for the
+// ~25 minutes it took a fresh Turn to actually land and update History,
+// looking exactly like a Run resurrecting and dying in a loop
+// ("zombie" behaviour) even though it was making real, if slow,
+// progress the whole time (see ADR-0090).
+//
+// If History is empty, recordUpdatedAt is returned directly — a Run
+// with no turns yet has nothing else to derive progress from.
+func LastProgress(state refactorsweep.AgentState, recordUpdatedAt time.Time) time.Time {
+	progress := recordUpdatedAt
+	if len(state.History) > 0 {
+		turn := state.History[len(state.History)-1]
+		turnProgress := turn.StartedAt
+		if !turn.EndedAt.IsZero() {
+			turnProgress = turn.EndedAt
+		}
+		if turnProgress.After(progress) {
+			progress = turnProgress
+		}
 	}
-	turn := state.History[len(state.History)-1]
-	if turn.EndedAt.IsZero() {
-		return turn.StartedAt
-	}
-	return turn.EndedAt
+	return progress
 }
 
 // scanPageSize is the page size used when paginating through the
@@ -74,7 +92,7 @@ func Scan(ctx context.Context, rs workflow.RecordStore, workflowName string, now
 			if err := workflow.Unmarshal(rec.Object, &state); err != nil {
 				continue
 			}
-			lastProgress := LastProgress(state, rec.CreatedAt)
+			lastProgress := LastProgress(state, rec.UpdatedAt)
 			if IsStuck(status, lastProgress, now, threshold) {
 				stuck = append(stuck, rec.RunID)
 			}

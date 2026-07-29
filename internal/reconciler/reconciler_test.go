@@ -133,6 +133,28 @@ func TestLastProgress(t *testing.T) {
 	}
 }
 
+// Regression (ADR-0090): found live — a Run resumed from Failed days
+// after its last real Turn was immediately re-flagged as stuck by the
+// reconciler, because History still pointed at that days-old timestamp
+// and the resume itself (a store write with no new Turn) wasn't
+// recognised as progress. recordUpdatedAt must win when it's more
+// recent than History's last turn, not just serve as a fallback for an
+// entirely empty History.
+func TestLastProgress_RecordUpdatedAtMoreRecentThanStaleHistory_Wins(t *testing.T) {
+	staleHistoryTime := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC) // the Run's last real Turn, days ago
+	justResumed := time.Date(2026, 7, 28, 12, 57, 0, 0, time.UTC)     // directResume's store write, moments ago
+
+	state := refactorsweep.AgentState{
+		History: []refactorsweep.Turn{
+			{StartedAt: staleHistoryTime, EndedAt: staleHistoryTime},
+		},
+	}
+	got := LastProgress(state, justResumed)
+	if !got.Equal(justResumed) {
+		t.Errorf("LastProgress() = %v, want the just-resumed record UpdatedAt %v (must not use stale History)", got, justResumed)
+	}
+}
+
 func TestScan(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	threshold := 30 * time.Minute
@@ -164,6 +186,47 @@ func TestScan(t *testing.T) {
 	want := []string{"00000000-0000-0000-0000-000000000001"}
 	if len(got) != len(want) || (len(got) > 0 && got[0] != want[0]) {
 		t.Errorf("Scan() = %v, want %v", got, want)
+	}
+}
+
+// Regression (ADR-0090): a Run resumed from Failed (e.g. via directResume)
+// has stale History but a fresh record UpdatedAt from the resume's own
+// store write. Scan must not flag it as stuck immediately — only once
+// genuinely no progress (including no further resume) happens for the
+// full threshold.
+func TestScan_JustResumedRun_NotImmediatelyFlaggedStuck(t *testing.T) {
+	now := time.Date(2026, 7, 28, 13, 0, 0, 0, time.UTC)
+	threshold := 30 * time.Minute
+	staleHistoryTime := now.Add(-5 * 24 * time.Hour) // last real Turn, 5 days ago
+	justResumed := now.Add(-1 * time.Minute)         // directResume's write, a minute ago
+
+	rs := memrecordstore.New()
+	state := refactorsweep.AgentState{
+		History: []refactorsweep.Turn{{StartedAt: staleHistoryTime, EndedAt: staleHistoryTime}},
+	}
+	objJSON, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal AgentState: %v", err)
+	}
+	if err := rs.Store(t.Context(), &workflow.Record{
+		WorkflowName: testWorkflowName,
+		ForeignID:    "fid-resumed",
+		RunID:        "00000000-0000-0000-0000-0000000000aa",
+		RunState:     workflow.RunStateRunning,
+		Status:       int(refactorsweep.StatusDiscovering),
+		Object:       objJSON,
+		CreatedAt:    staleHistoryTime,
+		UpdatedAt:    justResumed,
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	got, err := Scan(t.Context(), rs, testWorkflowName, now, threshold)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Scan() flagged a just-resumed Run as stuck despite fresh UpdatedAt: %v", got)
 	}
 }
 
