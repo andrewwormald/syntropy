@@ -477,6 +477,110 @@ func TestBuildPrompt_DecisionProtocol_MandatesMarkerEvenWhenBlocked(t *testing.T
 	}
 }
 
+// --- title/description update parsing tests (ADR-0091) ---
+
+func TestParseTitleUpdate_Present(t *testing.T) {
+	out := `I noticed the MR title was stale.
+
+<syntropy-title-update>fix(poller): redispatch terminal events</syntropy-title-update>
+
+<syntropy-decision>continue</syntropy-decision>`
+	if got := ParseTitleUpdate(out); got != "fix(poller): redispatch terminal events" {
+		t.Errorf("ParseTitleUpdate: got %q", got)
+	}
+}
+
+func TestParseTitleUpdate_Absent(t *testing.T) {
+	out := `Nothing to update here.
+
+<syntropy-decision>continue</syntropy-decision>`
+	if got := ParseTitleUpdate(out); got != "" {
+		t.Errorf("ParseTitleUpdate: want empty, got %q", got)
+	}
+}
+
+func TestParseTitleUpdate_LastMarkerWins(t *testing.T) {
+	out := `First I thought <syntropy-title-update>wrong title</syntropy-title-update>
+but actually:
+
+<syntropy-title-update>fix(poller): correct title</syntropy-title-update>`
+	if got := ParseTitleUpdate(out); got != "fix(poller): correct title" {
+		t.Errorf("ParseTitleUpdate: want the last standalone tag, got %q", got)
+	}
+}
+
+func TestParseTitleUpdate_IncidentalMentionDoesNotHijack(t *testing.T) {
+	out := "Discussing the format: \"a tag like <syntropy-title-update>example</syntropy-title-update> here\" isn't a real request.\n\n<syntropy-decision>continue</syntropy-decision>"
+	if got := ParseTitleUpdate(out); got != "" {
+		t.Errorf("ParseTitleUpdate: incidental same-line mention should not match, got %q", got)
+	}
+}
+
+func TestParseDescriptionUpdate_Present(t *testing.T) {
+	out := `The description was missing context.
+
+<syntropy-description-update>
+This MR fixes the reconciler's LastProgress calculation.
+
+It now uses the record's own UpdatedAt instead of History.
+</syntropy-description-update>
+
+<syntropy-decision>continue</syntropy-decision>`
+	got := ParseDescriptionUpdate(out)
+	if !strings.Contains(got, "LastProgress calculation") || !strings.Contains(got, "own UpdatedAt") {
+		t.Errorf("ParseDescriptionUpdate: multi-line content not captured, got %q", got)
+	}
+}
+
+func TestParseDescriptionUpdate_Absent(t *testing.T) {
+	out := `Nothing to update here.
+
+<syntropy-decision>continue</syntropy-decision>`
+	if got := ParseDescriptionUpdate(out); got != "" {
+		t.Errorf("ParseDescriptionUpdate: want empty, got %q", got)
+	}
+}
+
+func TestParseDescriptionUpdate_LastMarkerWins(t *testing.T) {
+	out := `<syntropy-description-update>first draft</syntropy-description-update>
+
+Actually, better:
+
+<syntropy-description-update>final draft</syntropy-description-update>`
+	if got := ParseDescriptionUpdate(out); got != "final draft" {
+		t.Errorf("ParseDescriptionUpdate: want the last tag, got %q", got)
+	}
+}
+
+func TestRun_TitleAndDescriptionUpdate_PopulatedIndependentlyOfDecision(t *testing.T) {
+	// TitleUpdate/DescriptionUpdate must thread through Run() into
+	// runner.Response regardless of Decision (they're a separate protocol
+	// from <syntropy-decision> — see ADR-0091).
+	dir := t.TempDir()
+	fakeBinary := filepath.Join(dir, "fake-claude.sh")
+	script := `#!/bin/sh
+printf '{"type":"result","subtype":"success","is_error":false,"result":"Fixing stale metadata.\\n\\n<syntropy-title-update>fix(poller): retitle</syntropy-title-update>\\n\\n<syntropy-description-update>updated body</syntropy-description-update>\\n\\n<syntropy-decision>continue</syntropy-decision>"}'
+`
+	if err := os.WriteFile(fakeBinary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	r := &Runner{Binary: fakeBinary}
+	resp, err := r.Run(context.Background(), runner.Request{Goal: "test"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resp.Decision != runner.DecisionContinue {
+		t.Errorf("Decision: want Continue, got %v", resp.Decision)
+	}
+	if resp.TitleUpdate != "fix(poller): retitle" {
+		t.Errorf("TitleUpdate: got %q", resp.TitleUpdate)
+	}
+	if resp.DescriptionUpdate != "updated body" {
+		t.Errorf("DescriptionUpdate: got %q", resp.DescriptionUpdate)
+	}
+}
+
 // --- BuildArgs tests ---
 
 func TestBuildArgs_NoModel(t *testing.T) {

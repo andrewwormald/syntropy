@@ -181,6 +181,12 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 		resultText = rawOut
 	}
 
+	// Independent of Decision/ParseDecision — these tags can appear on any
+	// turn, so they're parsed regardless of how the decision marker itself
+	// turns out (ADR-0091).
+	titleUpdate := ParseTitleUpdate(resultText)
+	descriptionUpdate := ParseDescriptionUpdate(resultText)
+
 	if runErr != nil {
 		// Even on non-zero exit we try to parse a decision — the model
 		// might have flagged failure via the marker before exiting. Fall
@@ -196,12 +202,14 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 					strings.TrimSpace(stderr.String()))
 		}
 		return runner.Response{
-			Decision:  decision,
-			Summary:   summary,
-			Question:  question,
-			Title:     title,
-			Tokens:    tokens,
-			StartedAt: start, EndedAt: end,
+			Decision:          decision,
+			Summary:           summary,
+			Question:          question,
+			Title:             title,
+			TitleUpdate:       titleUpdate,
+			DescriptionUpdate: descriptionUpdate,
+			Tokens:            tokens,
+			StartedAt:         start, EndedAt: end,
 		}, fmt.Errorf("claude exec: %w (parsed decision: %s)", runErr, decision)
 	}
 
@@ -225,12 +233,14 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 			fmt.Errorf("parse claude output: %w; response was:\n%s", err, shown)
 	}
 	return runner.Response{
-		Decision:  decision,
-		Summary:   summary,
-		Question:  question,
-		Title:     title,
-		Tokens:    tokens,
-		StartedAt: start, EndedAt: end,
+		Decision:          decision,
+		Summary:           summary,
+		Question:          question,
+		Title:             title,
+		TitleUpdate:       titleUpdate,
+		DescriptionUpdate: descriptionUpdate,
+		Tokens:            tokens,
+		StartedAt:         start, EndedAt: end,
 	}, nil
 }
 
@@ -525,4 +535,50 @@ func splitVerb(inner string) (verb, rest string) {
 	}
 	return strings.ToLower(strings.TrimSpace(inner[:idx])),
 		strings.TrimSpace(inner[idx+1:])
+}
+
+// --- title/description update parsing (ADR-0091) ---
+//
+// These are separate, independent tags from <syntropy-decision>: they can
+// appear on any turn (not only on Decision=Done), so the runner can request
+// an MR title/description fix on the spot instead of waiting until it
+// finishes. Parsing is deliberately kept as its own pair of regexes/
+// functions rather than folded into ParseDecision or a shared "generic tag"
+// helper — the two protocols have different lifetimes and this keeps each
+// one simple to reason about independently.
+
+// titleUpdateRE matches a <syntropy-title-update> tag. Mirrors decisionRE's
+// own-line-anchored style (see its comment) so an incidental mention of the
+// tag in prose can't hijack it; content is single-line, matching how MR
+// titles are used elsewhere (e.g. the "done: <title>" mechanism).
+var titleUpdateRE = regexp.MustCompile(`(?m)^[ \t]*<syntropy-title-update>\s*(.*?)\s*</syntropy-title-update>[ \t]*$`)
+
+// descriptionUpdateRE mirrors titleUpdateRE but allows the captured content
+// to span multiple lines (an MR description is rarely a single line) while
+// still requiring the opening/closing tags themselves to each sit alone on
+// their own line.
+var descriptionUpdateRE = regexp.MustCompile(`(?ms)^[ \t]*<syntropy-description-update>\s*(.*?)\s*</syntropy-description-update>[ \t]*$`)
+
+// ParseTitleUpdate returns the content of the LAST <syntropy-title-update>
+// tag in out, or "" if none is present. Last-match-wins, same rationale as
+// ParseDecision: the model may echo the tag while reasoning before the real
+// one.
+func ParseTitleUpdate(out string) string {
+	return lastTagMatch(titleUpdateRE, out)
+}
+
+// ParseDescriptionUpdate is ParseTitleUpdate's sibling for
+// <syntropy-description-update>.
+func ParseDescriptionUpdate(out string) string {
+	return lastTagMatch(descriptionUpdateRE, out)
+}
+
+// lastTagMatch returns the trimmed capture group of the last match of re in
+// out, or "" if re has no match.
+func lastTagMatch(re *regexp.Regexp, out string) string {
+	matches := re.FindAllStringSubmatch(out, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(matches[len(matches)-1][1])
 }

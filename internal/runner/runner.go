@@ -98,6 +98,17 @@ type Response struct {
 	// otherwise, in which case the caller falls back to its own default
 	// title.
 	Title string
+
+	// TitleUpdate and DescriptionUpdate carry a runner-requested change to
+	// the MR's title/description, read from the dedicated
+	// <syntropy-title-update>/<syntropy-description-update> tags (ADR-0091).
+	// Unlike Title, these can be populated on any turn, independent of
+	// Decision, so the runner can fix MR metadata it's authorized to touch
+	// without waiting for a human to hand-edit it. Applying them to the MR
+	// provider is the harness's job, not the runner's; empty means no
+	// update was requested this turn.
+	TitleUpdate       string
+	DescriptionUpdate string
 }
 
 // Learnings are the subagent's optional output to feed the cheap-filter loop.
