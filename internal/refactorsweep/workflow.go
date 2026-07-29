@@ -1489,8 +1489,27 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// themselves via their own hasWork check; this is the same safety
 			// net for the decisions that don't otherwise touch git.
 			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-			// Runner decided nothing actionable. Don't post a comment — that
-			// would itself trigger a webhook and risk a loop.
+			// A real human comment (EventNoteAdded) deserves an actual reply
+			// with the runner's reasoning — same treatment as the Done+
+			// !hasWork "(No code changes were needed.)" path above. Found
+			// live: a genuine question ("why remove windows support?") got
+			// a full runner turn and a real answer in resp.Summary, but the
+			// original blanket silence here ("avoid a webhook loop") meant
+			// it never reached the human at all — the loop concern is
+			// already fully covered by isOwnEcho/RecentOutgoingHashes
+			// (ADR-0035), so staying silent here no longer buys anything
+			// except leaving real questions unanswered (ADR-0089). Still
+			// silent for fix_ci (EventPipelineFailed): a CI failure judged
+			// as needing no action can recur every retry, and posting "no
+			// changes needed" on every one of those would be genuine noise
+			// a human never asked for, unlike a one-off comment.
+			if ev.Kind == provider.EventNoteAdded {
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+				if discID := ev.Note.DiscussionID; discID != "" {
+					_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
+				}
+			}
 			return StatusAwaitingMerge, nil
 		case DecisionAsk:
 			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
