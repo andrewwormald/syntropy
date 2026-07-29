@@ -83,18 +83,39 @@ type SaveSnapshot func(ctx context.Context, runID string, noteIDs map[int]int64,
 //
 // Returns when ctx is cancelled.
 type Loop struct {
-	Interval    time.Duration
-	Providers   map[string]provider.Provider
-	Source      RunSource
-	Dispatcher  EventDispatcher
+	Interval     time.Duration
+	Providers    map[string]provider.Provider
+	Source       RunSource
+	Dispatcher   EventDispatcher
 	SaveSnapshot SaveSnapshot
-	Logger      *slog.Logger
+	Logger       *slog.Logger
+
+	// Concurrency bounds how many Runs' pollRun calls execute at once.
+	// Found live: pollOnce used to walk every active Run sequentially in
+	// one goroutine — a single Run whose event triggers a real runner
+	// invocation (rn.Run, which can take 15-20+ minutes) blocked the
+	// entire poller from even checking any other Run for new activity
+	// until that call returned, regardless of which repo either Run
+	// targeted (ADR-0093). Defaults to defaultPollConcurrency if unset.
+	Concurrency int
 
 	// authBackoff tracks per-Run auth-failure state. Protected by authMu.
 	// Lazily initialised on first auth error.
 	authMu      sync.Mutex
 	authBackoff map[string]authBackoffEntry
+
+	// inFlight tracks RunIDs currently being polled by a still-running
+	// goroutine from a previous tick, so a slow pollRun (e.g. blocked
+	// inside a long runner invocation) never gets a second, overlapping
+	// pollRun started for the *same* RunID by a later tick — only cross-
+	// Run concurrency is intended, never concurrent calls for one Run's
+	// own state. Protected by inFlightMu.
+	inFlightMu sync.Mutex
+	inFlight   map[string]bool
 }
+
+// defaultPollConcurrency is used when Loop.Concurrency is unset (<= 0).
+const defaultPollConcurrency = 8
 
 func (l *Loop) Run(ctx context.Context) {
 	if l.Interval <= 0 {
@@ -119,9 +140,53 @@ func (l *Loop) pollOnce(ctx context.Context) {
 		l.Logger.Warn("poller: list active runs", "err", err)
 		return
 	}
-	for _, r := range runs {
-		l.pollRun(ctx, r)
+
+	concurrency := l.Concurrency
+	if concurrency <= 0 {
+		concurrency = defaultPollConcurrency
 	}
+	sem := make(chan struct{}, concurrency)
+
+	for _, r := range runs {
+		if !l.startPolling(r.RunID) {
+			// A previous tick's pollRun for this exact RunID is still
+			// running (almost always because it's blocked inside a long
+			// runner invocation) — skip it this tick rather than starting
+			// a second, overlapping pollRun for the same Run. It'll be
+			// picked up again once the in-flight one finishes.
+			continue
+		}
+		go func(run ActiveRun) {
+			sem <- struct{}{}
+			defer func() {
+				<-sem
+				l.finishPolling(run.RunID)
+			}()
+			l.pollRun(ctx, run)
+		}(r)
+	}
+}
+
+// startPolling claims runID for this tick, returning false if another
+// goroutine (from a previous, still-running tick) already holds the
+// claim. finishPolling releases it once that goroutine's pollRun returns.
+func (l *Loop) startPolling(runID string) bool {
+	l.inFlightMu.Lock()
+	defer l.inFlightMu.Unlock()
+	if l.inFlight == nil {
+		l.inFlight = map[string]bool{}
+	}
+	if l.inFlight[runID] {
+		return false
+	}
+	l.inFlight[runID] = true
+	return true
+}
+
+func (l *Loop) finishPolling(runID string) {
+	l.inFlightMu.Lock()
+	defer l.inFlightMu.Unlock()
+	delete(l.inFlight, runID)
 }
 
 func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
@@ -253,13 +318,13 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			}
 			mu.Unlock()
 			ev := provider.Event{
-				Kind:      provider.EventNoteAdded,
-				ProjectID: mr.ProjectID,
-				MR:        mr,
-				Author:    n.Author,
-				IsBot:     n.Author.Bot,
-				Note:      provider.Note{ID: n.ID, Body: n.Body, DiscussionID: n.DiscussionID, Stream: n.Stream},
-				IsAuthor:  strings.EqualFold(n.Author.Handle, r.Author.Handle) && r.Author.Handle != "",
+				Kind:       provider.EventNoteAdded,
+				ProjectID:  mr.ProjectID,
+				MR:         mr,
+				Author:     n.Author,
+				IsBot:      n.Author.Bot,
+				Note:       provider.Note{ID: n.ID, Body: n.Body, DiscussionID: n.DiscussionID, Stream: n.Stream},
+				IsAuthor:   strings.EqualFold(n.Author.Handle, r.Author.Handle) && r.Author.Handle != "",
 				ReceivedAt: time.Now().UnixNano(),
 			}
 			if err := l.Dispatcher(ctx, r.RunID, ev); err != nil {
