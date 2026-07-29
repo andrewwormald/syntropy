@@ -246,6 +246,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		CommentBody:  "please also rename the LogContext type",
 		CIFailure:    "FAIL: TestSomething (panic: nil pointer)",
 		HookFailure:  "gofmt: file is not formatted (payments.go)",
+		ParseFailure: "no <syntropy-decision> tag found in response",
 	}
 	prompt := BuildPrompt(req)
 
@@ -257,6 +258,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		"## Reviewer feedback to address", "rename the LogContext",
 		"## CI failure to investigate", "TestSomething",
 		"## Commit rejected by pre-commit hook", "gofmt: file is not formatted",
+		"## Previous response could not be parsed", "no <syntropy-decision> tag found",
 		"## Scope discipline", "small and narrowly scoped",
 		"## How to finish", "<syntropy-decision>",
 	} {
@@ -397,6 +399,44 @@ func TestBuildPrompt_NoHookFailure_NoRetryGuidance(t *testing.T) {
 		prompt := BuildPrompt(req)
 		if strings.Contains(prompt, "## Commit rejected by pre-commit hook") {
 			t.Errorf("empty HookFailure should not produce a hook-rejection header; req=%+v", req)
+		}
+	}
+}
+
+func TestBuildPrompt_ParseFailure_AppendsRetryGuidance(t *testing.T) {
+	// ADR-0092: a prior response with no valid decision marker is fed back
+	// to the runner so it can self-correct and retry, rather than the Run
+	// pausing for a human immediately.
+	req := runner.Request{
+		UnitID:       "svc-payments",
+		Goal:         "do the unit",
+		ParseFailure: "no <syntropy-decision> tag found in response",
+	}
+	prompt := BuildPrompt(req)
+
+	for _, want := range []string{
+		"## Previous response could not be parsed",
+		"no <syntropy-decision> tag found",
+		"<syntropy-decision>",
+		"alone on its own line",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPrompt_NoParseFailure_NoRetryGuidance(t *testing.T) {
+	// ParseFailure empty on the ordinary invocation shapes — no
+	// parse-failure block should be rendered.
+	for _, req := range []runner.Request{
+		{Goal: "plan the next increment"},
+		{Goal: "do the unit", UnitID: "svc-payments"},
+		{Goal: "do the unit", UnitID: "svc-payments", CIFailure: "FAIL: TestSomething"},
+	} {
+		prompt := BuildPrompt(req)
+		if strings.Contains(prompt, "## Previous response could not be parsed") {
+			t.Errorf("empty ParseFailure should not produce a parse-failure header; req=%+v", req)
 		}
 	}
 }
