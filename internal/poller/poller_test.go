@@ -54,6 +54,7 @@ func (f *fakeAuthProvider) NormaliseEvent(_ http.Header, _ []byte) (provider.Eve
 func (f *fakeAuthProvider) CreateMR(_ context.Context, _ string, _ provider.MRDraft) (provider.MR, error) { return provider.MR{}, nil }
 func (f *fakeAuthProvider) PostComment(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeAuthProvider) UpdateMRDescription(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) CloseMR(_ context.Context, _ string, _ int) error { return nil }
 func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) { return nil, nil }
 func (f *fakeAuthProvider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error { return nil }

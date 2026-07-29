@@ -250,6 +250,13 @@ func (p *Provider) UpdateMRTitle(ctx context.Context, projectID string, mrIID in
 	return p.doJSON(ctx, http.MethodPut, path, map[string]any{"title": title}, nil)
 }
 
+// UpdateMRDescription → PUT /api/v4/projects/:id/merge_requests/:iid.
+func (p *Provider) UpdateMRDescription(ctx context.Context, projectID string, mrIID int, description string) error {
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
+		url.PathEscape(projectID), mrIID)
+	return p.doJSON(ctx, http.MethodPut, path, map[string]any{"description": description}, nil)
+}
+
 // CloseMR → PUT /api/v4/projects/:id/merge_requests/:iid with state_event=close.
 func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) error {
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",

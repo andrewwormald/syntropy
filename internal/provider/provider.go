@@ -68,6 +68,7 @@ type Provider interface {
 	CreateMR(ctx context.Context, projectID string, mr MRDraft) (MR, error)
 	PostComment(ctx context.Context, projectID string, mrIID int, body string) error
 	UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error
+	UpdateMRDescription(ctx context.Context, projectID string, mrIID int, description string) error
 	CloseMR(ctx context.Context, projectID string, mrIID int) error
 
 	// ReplyToDiscussion posts a reply within an existing comment thread,
