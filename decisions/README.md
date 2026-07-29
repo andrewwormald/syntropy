@@ -140,3 +140,4 @@ forces or unlocks.
 | 0090 | Reconciler's `LastProgress` uses the record's own `UpdatedAt`, not just `History` | Accepted | 2026-07-29 |
 | 0091 | Dedicated `<syntropy-title-update>`/`<syntropy-description-update>` tags, applied by the harness | Accepted | 2026-07-29 |
 | 0092 | Feed unparseable decision markers back to the runner as `ParseFailure` | Accepted | 2026-07-29 |
+| 0093 | Poller dispatches Runs concurrently, bounded by a semaphore              | Accepted | 2026-07-29 |

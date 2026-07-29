@@ -24,7 +24,7 @@ func TestAuthBackoffDuration(t *testing.T) {
 		{1, 2 * time.Minute, 2 * time.Minute},
 		{2, 8 * time.Minute, 8 * time.Minute},
 		{3, 32 * time.Minute, 32 * time.Minute},
-		{4, 2 * time.Hour, 2 * time.Hour}, // capped
+		{4, 2 * time.Hour, 2 * time.Hour},  // capped
 		{10, 2 * time.Hour, 2 * time.Hour}, // still capped
 	}
 	for _, tt := range tests {
@@ -40,14 +40,18 @@ func TestAuthBackoffDuration(t *testing.T) {
 
 // fakeAuthProvider wraps a fixed GetMRState error to simulate auth failures.
 type fakeAuthProvider struct {
-	getMRStateErr error
+	getMRStateErr   error
 	getMRStateCalls int
-	mu sync.Mutex
+	mu              sync.Mutex
 }
 
-func (f *fakeAuthProvider) Name() string                                            { return "fake" }
-func (f *fakeAuthProvider) AuthenticatedUser(_ context.Context) (provider.User, error) { return provider.User{}, nil }
-func (f *fakeAuthProvider) RegisterWebhook(_ context.Context, _, _, _ string, _ []provider.EventKind) (string, error) { return "", nil }
+func (f *fakeAuthProvider) Name() string { return "fake" }
+func (f *fakeAuthProvider) AuthenticatedUser(_ context.Context) (provider.User, error) {
+	return provider.User{}, nil
+}
+func (f *fakeAuthProvider) RegisterWebhook(_ context.Context, _, _, _ string, _ []provider.EventKind) (string, error) {
+	return "", nil
+}
 func (f *fakeAuthProvider) DeregisterWebhook(_ context.Context, _, _ string) error { return nil }
 func (f *fakeAuthProvider) VerifySignature(_ http.Header, _ []byte, _ string) bool { return true }
 func (f *fakeAuthProvider) NormaliseEvent(_ http.Header, _ []byte) (provider.Event, error) { return provider.Event{}, nil }
@@ -56,14 +60,20 @@ func (f *fakeAuthProvider) PostComment(_ context.Context, _ string, _ int, _ str
 func (f *fakeAuthProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) UpdateMRDescription(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) CloseMR(_ context.Context, _ string, _ int) error { return nil }
-func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) { return nil, nil }
-func (f *fakeAuthProvider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error { return nil }
-func (f *fakeAuthProvider) ReplyToDiscussion(_ context.Context, _ string, _ int, _ string, _ string) error { return nil }
+func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) {
+	return nil, nil
+}
+func (f *fakeAuthProvider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+func (f *fakeAuthProvider) ReplyToDiscussion(_ context.Context, _ string, _ int, _ string, _ string) error {
+	return nil
+}
 func (f *fakeAuthProvider) ReactToNote(_ context.Context, _ string, _ int, _ int64, _, _ string) error {
 	return nil
 }
 func (f *fakeAuthProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error { return nil }
-func (f *fakeAuthProvider) IsBot(_ provider.User) bool { return false }
+func (f *fakeAuthProvider) IsBot(_ provider.User) bool                                  { return false }
 func (f *fakeAuthProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -400,4 +410,185 @@ func TestIsAuthError_WrappedErrAuthFailure(t *testing.T) {
 	if !provider.IsAuthError(fmt.Errorf("wrap: %w", provider.ErrAuthFailure)) {
 		t.Error("IsAuthError(wrapped ErrAuthFailure) should be true via errors.Is")
 	}
+}
+
+// --- pollOnce concurrency (ADR-0093) ---
+
+// fakeRunSource returns a fixed list of ActiveRuns.
+type fakeRunSource struct {
+	runs []ActiveRun
+}
+
+func (s *fakeRunSource) ActiveRuns(_ context.Context) ([]ActiveRun, error) {
+	return s.runs, nil
+}
+
+// blockingProvider's GetMRState blocks until release is closed, tracking
+// how many calls are concurrently in flight (peak observed) via atomic
+// counters guarded by mu.
+type blockingProvider struct {
+	fakeAuthProvider
+	release chan struct{}
+
+	mu           sync.Mutex
+	inFlightNow  int
+	peakInFlight int
+	calls        int
+}
+
+func (p *blockingProvider) GetMRState(ctx context.Context, _ string, _ int) (provider.MRState, error) {
+	p.mu.Lock()
+	p.calls++
+	p.inFlightNow++
+	if p.inFlightNow > p.peakInFlight {
+		p.peakInFlight = p.inFlightNow
+	}
+	p.mu.Unlock()
+
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+	}
+
+	p.mu.Lock()
+	p.inFlightNow--
+	p.mu.Unlock()
+	return provider.MRState{State: "opened"}, nil
+}
+
+func runsWithIDs(ids ...string) []ActiveRun {
+	out := make([]ActiveRun, len(ids))
+	for i, id := range ids {
+		out[i] = ActiveRun{
+			RunID:    id,
+			Provider: "fake",
+			InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: i + 1}},
+		}
+	}
+	return out
+}
+
+// Regression (ADR-0093): pollOnce used to walk every active Run
+// sequentially in one goroutine — a single slow Run (blocked inside a
+// real runner invocation) prevented the poller from even checking any
+// other Run for new activity. Different RunIDs must now be polled
+// concurrently.
+func TestPollOnce_DispatchesDifferentRunsConcurrently(t *testing.T) {
+	bp := &blockingProvider{release: make(chan struct{})}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": bp},
+		Dispatcher: (&dispatchRecord{}).dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+		Source:     &fakeRunSource{runs: runsWithIDs("run-a", "run-b", "run-c")},
+	}
+
+	l.pollOnce(t.Context())
+
+	// Give the spawned goroutines a moment to reach the blocking call.
+	deadline := time.After(2 * time.Second)
+	for {
+		bp.mu.Lock()
+		calls := bp.calls
+		bp.mu.Unlock()
+		if calls == 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("want all 3 Runs' GetMRState called concurrently; only %d reached it in time", calls)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	bp.mu.Lock()
+	peak := bp.peakInFlight
+	bp.mu.Unlock()
+	if peak < 2 {
+		t.Errorf("want multiple Runs polled concurrently (peak >= 2); got peak=%d", peak)
+	}
+
+	close(bp.release) // let the blocked calls finish so the test can exit cleanly
+}
+
+// A RunID still being polled by a goroutine from a previous tick must not
+// get a second, overlapping pollRun started for it by a later tick.
+func TestPollOnce_SameRunNotPolledConcurrentlyAcrossTicks(t *testing.T) {
+	bp := &blockingProvider{release: make(chan struct{})}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": bp},
+		Dispatcher: (&dispatchRecord{}).dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+		Source:     &fakeRunSource{runs: runsWithIDs("run-a")},
+	}
+
+	// First tick: starts polling run-a, which blocks inside GetMRState.
+	l.pollOnce(t.Context())
+	deadline := time.After(2 * time.Second)
+	for {
+		bp.mu.Lock()
+		calls := bp.calls
+		bp.mu.Unlock()
+		if calls >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("first tick's pollRun never reached the blocking call")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Second tick, while run-a is still in flight: must be skipped, not
+	// dispatched as a second concurrent pollRun for the same RunID.
+	l.pollOnce(t.Context())
+	time.Sleep(50 * time.Millisecond)
+
+	bp.mu.Lock()
+	calls := bp.calls
+	bp.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("want exactly 1 call while run-a is still in flight from the first tick; got %d", calls)
+	}
+
+	close(bp.release)
+}
+
+// Concurrency bounds how many Runs are polled at once, even with more
+// Runs available than the limit.
+func TestPollOnce_RespectsConcurrencyLimit(t *testing.T) {
+	bp := &blockingProvider{release: make(chan struct{})}
+	l := &Loop{
+		Providers:   map[string]provider.Provider{"fake": bp},
+		Dispatcher:  (&dispatchRecord{}).dispatch,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+		Source:      &fakeRunSource{runs: runsWithIDs("run-a", "run-b", "run-c", "run-d", "run-e")},
+		Concurrency: 2,
+	}
+
+	l.pollOnce(t.Context())
+
+	deadline := time.After(2 * time.Second)
+	for {
+		bp.mu.Lock()
+		peak := bp.peakInFlight
+		bp.mu.Unlock()
+		if peak >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("never observed 2 concurrent calls")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // let any over-eager dispatch show up, if it exists
+
+	bp.mu.Lock()
+	peak := bp.peakInFlight
+	bp.mu.Unlock()
+	if peak > 2 {
+		t.Errorf("Concurrency: 2 must never allow more than 2 in flight at once; observed peak=%d", peak)
+	}
+
+	close(bp.release)
 }
