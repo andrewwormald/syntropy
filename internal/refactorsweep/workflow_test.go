@@ -60,6 +60,17 @@ type fakeProvider struct {
 
 	retryJobErr error
 	retriedJobs []retriedJobCall
+
+	titleUpdateErr       error
+	titleUpdates         []metadataUpdateCall
+	descriptionUpdateErr error
+	descriptionUpdates   []metadataUpdateCall
+}
+
+type metadataUpdateCall struct {
+	ProjectID string
+	MRIID     int
+	Value     string
 }
 
 type retriedJobCall struct {
@@ -155,7 +166,18 @@ func (f *fakeProvider) PostComment(_ context.Context, projectID string, mrIID in
 	f.comments = append(f.comments, postedComment{ProjectID: projectID, MRIID: mrIID, Body: body})
 	return f.commentErr
 }
-func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeProvider) UpdateMRTitle(_ context.Context, projectID string, mrIID int, title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.titleUpdates = append(f.titleUpdates, metadataUpdateCall{ProjectID: projectID, MRIID: mrIID, Value: title})
+	return f.titleUpdateErr
+}
+func (f *fakeProvider) UpdateMRDescription(_ context.Context, projectID string, mrIID int, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.descriptionUpdates = append(f.descriptionUpdates, metadataUpdateCall{ProjectID: projectID, MRIID: mrIID, Value: description})
+	return f.descriptionUpdateErr
+}
 func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
 	return provider.MRState{State: "opened"}, nil
 }
@@ -910,6 +932,42 @@ func TestWork_MRTitle_FallsBackWhenRunnerOmitsOne(t *testing.T) {
 	}
 	if got, want := fp.createMRCalls[0].Title, "Migrate to slog: svc-payments"; got != want {
 		t.Errorf("MR title: want default %q, got %q", want, got)
+	}
+}
+
+// TestWork_AppliesTitleAndDescriptionUpdates covers ADR-0091: a runner that
+// emits TitleUpdate/DescriptionUpdate on the same turn it opens the MR gets
+// both applied via the provider, on top of whatever CreateMR was called with.
+func TestWork_AppliesTitleAndDescriptionUpdates(t *testing.T) {
+	fp := &fakeProvider{createMRResult: provider.MR{IID: 42}}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision:          DecisionDone,
+		Summary:           "Migrated logrus calls to slog",
+		TitleUpdate:       "feat(payments): migrate logging to slog",
+		DescriptionUpdate: "Replaces logrus with slog across the payments service.",
+	}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.titleUpdates) != 1 || fp.titleUpdates[0].Value != "feat(payments): migrate logging to slog" {
+		t.Errorf("titleUpdates: got %+v", fp.titleUpdates)
+	}
+	if len(fp.descriptionUpdates) != 1 || fp.descriptionUpdates[0].Value != "Replaces logrus with slog across the payments service." {
+		t.Errorf("descriptionUpdates: got %+v", fp.descriptionUpdates)
+	}
+	if fp.titleUpdates[0].MRIID != 42 {
+		t.Errorf("titleUpdates[0].MRIID = %d, want 42", fp.titleUpdates[0].MRIID)
 	}
 }
 
@@ -2736,6 +2794,42 @@ func TestResume_NoteAdded_ReactsBeforeInvokingRunner(t *testing.T) {
 	want := reactToNoteCall{ProjectID: "x/y", MRIID: 1, NoteID: 42, Stream: "issue_comment", Emoji: "eyes"}
 	if got != want {
 		t.Errorf("ReactToNote call = %+v, want %+v", got, want)
+	}
+}
+
+// TestResume_AppliesTitleAndDescriptionUpdates covers ADR-0091 for the
+// resume/invokeForEvent path (not just work()'s initial MR-creation turn):
+// a runner can request MR metadata fixes on a mid-flight turn too,
+// independent of resp.Decision.
+func TestResume_AppliesTitleAndDescriptionUpdates(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision:          DecisionDone,
+		Summary:           "Renamed.",
+		TitleUpdate:       "fix(payments): correct MR title",
+		DescriptionUpdate: "Updated description reflecting the actual scope.",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fp.titleUpdates) != 1 || fp.titleUpdates[0] != (metadataUpdateCall{ProjectID: "x/y", MRIID: 7, Value: "fix(payments): correct MR title"}) {
+		t.Errorf("titleUpdates: got %+v", fp.titleUpdates)
+	}
+	if len(fp.descriptionUpdates) != 1 || fp.descriptionUpdates[0] != (metadataUpdateCall{ProjectID: "x/y", MRIID: 7, Value: "Updated description reflecting the actual scope."}) {
+		t.Errorf("descriptionUpdates: got %+v", fp.descriptionUpdates)
 	}
 }
 

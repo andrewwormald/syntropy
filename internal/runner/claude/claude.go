@@ -446,6 +446,16 @@ nothing useful recorded. Instead, end with
 ` + "`<syntropy-decision>ask: <one-line question></syntropy-decision>`" + `
 describing exactly what you needed to do and why it was blocked, so a
 human can unblock or redirect you.
+
+If the MR's title or description is stale or wrong, fix it yourself instead
+of asking a human to hand-edit it: emit
+` + "`<syntropy-title-update>new title</syntropy-title-update>`" + ` and/or
+` + "`<syntropy-description-update>new description</syntropy-description-update>`" + `
+on their own line(s), anywhere in your response, on any turn (not just when
+you finish). The description tag's content may span multiple lines. Only
+the last occurrence of each tag is used. These are independent of the
+` + "`<syntropy-decision>`" + ` marker — include them alongside it, not
+instead of it.
 `
 
 // --- decision parsing ---

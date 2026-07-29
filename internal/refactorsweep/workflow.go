@@ -843,6 +843,11 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		}
 		r.Object.InFlight[unitID] = mr
 
+		// Apply any title/description fixes the runner requested this same
+		// turn (ADR-0091), beyond what CreateMR already set from
+		// resp.Title/resp.Summary above.
+		applyMetadataUpdates(ctx, r, p, r.Object.ProjectID, mr.IID, resp)
+
 		// 6. Initial status comment so the author can see who's driving.
 		// Append the actual diff shortstat as a cheap hallucination guard:
 		// the reviewer sees both the runner's summary and the real extent of
@@ -905,6 +910,26 @@ const recentOutgoingHashCap = 32
 func hashBody(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
+}
+
+// applyMetadataUpdates pushes the runner's optional TitleUpdate/
+// DescriptionUpdate (ADR-0091) to the MR. The runner can emit these tags on
+// any turn to fix stale/wrong MR metadata itself instead of asking a human
+// to hand-edit it; applying them is the harness's job, never the runner's
+// own (ADR-0073's "harness owns every push" precedent). Best-effort: a
+// failure here is recorded but never fails the turn, since any code change
+// this turn already landed independently of the metadata update.
+func applyMetadataUpdates(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, projectID string, mrIID int, resp runner.Response) {
+	if resp.TitleUpdate != "" {
+		if err := p.UpdateMRTitle(ctx, projectID, mrIID, resp.TitleUpdate); err != nil {
+			r.Object.LastError = fmt.Sprintf("apply title update: %v", err)
+		}
+	}
+	if resp.DescriptionUpdate != "" {
+		if err := p.UpdateMRDescription(ctx, projectID, mrIID, resp.DescriptionUpdate); err != nil {
+			r.Object.LastError = fmt.Sprintf("apply description update: %v", err)
+		}
+	}
 }
 
 // postBotComment posts a top-level comment on the provider AND records its
@@ -1310,6 +1335,11 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		r.Object.TotalTokens += resp.Tokens
 
 		mr := r.Object.InFlight[unitID]
+
+		// Apply any title/description fixes the runner requested this turn
+		// (ADR-0091), independent of resp.Decision — the tags are a
+		// separate protocol from the decision marker.
+		applyMetadataUpdates(ctx, r, p, mr.ProjectID, mr.IID, resp)
 
 		// Phrase learning: runner can return phrases it judged safe to skip
 		// next time. Appended to the per-Run YAML; capped at MaxPerRunEntries

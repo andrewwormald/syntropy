@@ -236,6 +236,16 @@ func (p *Provider) UpdateMRTitle(ctx context.Context, projectID string, mrIID in
 	return p.doJSON(ctx, http.MethodPatch, path, map[string]any{"title": title}, nil)
 }
 
+// UpdateMRDescription → PATCH /repos/{owner}/{repo}/pulls/{number}.
+func (p *Provider) UpdateMRDescription(ctx context.Context, projectID string, mrIID int, description string) error {
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, mrIID)
+	return p.doJSON(ctx, http.MethodPatch, path, map[string]any{"body": description}, nil)
+}
+
 // CloseMR → PATCH /repos/{owner}/{repo}/pulls/{number} with state=closed.
 func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) error {
 	owner, repo, err := splitProjectID(projectID)

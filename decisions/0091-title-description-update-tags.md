@@ -38,6 +38,13 @@ job (never the runner's, consistent with ADR-0073's "harness owns every
 push" precedent) — that wiring is deliberately deferred to a follow-up
 increment so this one stays a single, reviewable concern.
 
+A follow-up increment added `Provider.UpdateMRDescription` (mirroring the
+existing `UpdateMRTitle`) alongside gitlab/github implementations, taught
+`decisionProtocol` about both tags, and applies `TitleUpdate`/
+`DescriptionUpdate` — best-effort, non-fatal — from both `work()` (the
+turn that opens the MR) and `invokeForEvent` (every subsequent turn),
+independent of `resp.Decision`.
+
 ## Alternatives considered
 
 - **Fold into the decision marker** (e.g. `<syntropy-decision>continue;
@@ -61,6 +68,5 @@ increment so this one stays a single, reviewable concern.
 - `runner.Response` gains two more fields that every `Runner` implementation
   should populate (today, only the `claude` adapter does; other runners
   default to zero values, same as any other Response field).
-- Follow-up work: teach `BuildPrompt`/`decisionProtocol` about the new tags,
-  and wire `TitleUpdate`/`DescriptionUpdate` into the workflow step bodies
-  that call the MR provider's update APIs.
+- `provider.Provider` gains `UpdateMRDescription`, so every implementation
+  (gitlab, github, and any test fakes) must provide it.
