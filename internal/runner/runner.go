@@ -70,6 +70,13 @@ type Request struct {
 	// before retrying, instead of the Run pausing for a human immediately.
 	HookFailure string
 
+	// ParseFailure is populated when this invocation is a retry after the
+	// prior turn's response had no valid decision marker — malformed,
+	// missing, or otherwise unparseable (ADR-0092). Holds the parse error
+	// so the runner can see what went wrong with its own output and
+	// correct it, instead of the Run pausing for a human immediately.
+	ParseFailure string
+
 	// CommenterIsAuthor reports whether CommentBody came from the Run's
 	// author. When false, the prompt tells the runner to auto-implement
 	// only objective defects and route solution-steering suggestions to

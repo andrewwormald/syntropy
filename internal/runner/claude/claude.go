@@ -4,7 +4,7 @@
 //
 // The adapter is dumb: it composes a prompt from the runner.Request
 // fields (Goal, Worktree, UnitID, CommentBody, CIFailure, ConflictFiles,
-// HookFailure), appends a
+// HookFailure, ParseFailure), appends a
 // decision-marker instruction, runs `claude -p --output-format json`,
 // and parses the JSON envelope for token counts and the decision marker
 // embedded in the result text. It does not interpret SkillCommand — the
@@ -276,8 +276,8 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 //  2. The body — req.Goal, taken verbatim
 //  3. Event-specific blocks (comment to address — plus the non-author
 //     triage guidance when the commenter isn't the Run's author, see
-//     ADR-0072 — CI failure to fix, and a hook-rejected commit to fix,
-//     see ADR-0075)
+//     ADR-0072 — CI failure to fix, a hook-rejected commit to fix, see
+//     ADR-0075, and an unparseable prior response to fix, see ADR-0092)
 //  4. The scope-discipline reminder (always appended; flavour depends on
 //     whether req.UnitID is set — see ADR-0045)
 //  5. The decision-marker protocol instructions (always appended)
@@ -310,6 +310,9 @@ func BuildPrompt(req runner.Request) string {
 	}
 	if req.HookFailure != "" {
 		fmt.Fprintf(&b, "## Commit rejected by pre-commit hook\n\n```\n%s\n```\n\n%s", req.HookFailure, hookFailureGuidance)
+	}
+	if req.ParseFailure != "" {
+		fmt.Fprintf(&b, "## Previous response could not be parsed\n\n```\n%s\n```\n\n%s", req.ParseFailure, parseFailureGuidance)
 	}
 
 	// UnitID is only set for unit-execution invocations (see work() in
@@ -360,6 +363,20 @@ pre-commit hooks — the output above is what the hook reported. Read it,
 fix whatever it's complaining about (formatting, lint, secrets, file
 size, etc.), and commit again. Do not use ` + "`--no-verify`" + ` or any other
 way of bypassing the hook.
+
+`
+
+// parseFailureGuidance follows the parse-failure block. ADR-0092: a
+// response with no valid decision marker (malformed, missing, or otherwise
+// unparseable) means syntropy couldn't tell what you decided, so this asks
+// you to end your response with a single, correctly-formed
+// <syntropy-decision> tag rather than treating the failure as a dead end.
+const parseFailureGuidance = `Your previous response could not be parsed — the error above is what
+syntropy reported. Your response must end with exactly one
+<syntropy-decision>...</syntropy-decision> tag, alone on its own line, using
+one of the documented forms (continue, done, ask: <question>, fail: <reason>,
+nochange, retryci: <reason>). Finish your work and emit a single well-formed
+tag.
 
 `
 
