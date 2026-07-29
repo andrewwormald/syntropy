@@ -31,20 +31,21 @@ new `## Previous response could not be parsed` block, rendered only when
 exactly one well-formed `<syntropy-decision>` tag, alone on its own line,
 using one of the documented verbs.
 
-This increment only threads the field through `Request` and the prompt.
-Populating `ParseFailure` from an actual `ErrNoDecisionMarker` and
-retrying the runner turn (rather than pausing) is deliberately left to a
-follow-on increment — see `internal/refactorsweep/workflow.go`'s
-`invokeForEvent` and `work()`, which still pause unconditionally on a
-`ParseDecision` error today.
+`internal/refactorsweep/workflow.go`'s `work()` and `invokeForEvent` both
+wrap the runner invocation in a bounded retry loop: when `rn.Run` returns
+an error wrapping `claude.ErrNoDecisionMarker`, the loop sets
+`req.ParseFailure` to the error text and retries the turn, up to
+`maxParseRetries` (2) times, mirroring the `maxHookRetries` cap pattern
+from ADR-0075/ADR-0076. Exceeding the cap falls back to the existing
+failure/pause behaviour unchanged.
 
 ## Consequences
 
-- No behavior changes yet: `ParseFailure` is never set by any caller in
-  this increment, so `BuildPrompt` output is unchanged for every existing
-  invocation.
-- The follow-on increment can wire the retry loops in
-  `internal/refactorsweep/workflow.go` to detect `ErrNoDecisionMarker`
-  specifically, set `req.ParseFailure`, and retry the runner turn a
-  bounded number of times before falling back to the existing pause —
-  mirroring the `maxHookRetries` cap pattern from ADR-0075/ADR-0078.
+- A runner turn that emits a malformed or missing decision marker now
+  gets up to `maxParseRetries` extra turns to self-correct before
+  `work()` fails the unit or `invokeForEvent` pauses the Run for a
+  human — the same UX improvement ADR-0075 gave hook rejections.
+- Only `ErrNoDecisionMarker` triggers a retry; other `ParseDecision`
+  errors (e.g. an unrecognised decision verb) still fail/pause on the
+  first occurrence, since those aren't the class of failure this ADR
+  targets.
