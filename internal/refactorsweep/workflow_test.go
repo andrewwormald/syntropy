@@ -20,6 +20,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/git"
 	"github.com/andrewwormald/syntropy/internal/provider"
 	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/runner/claude"
 	"github.com/andrewwormald/syntropy/internal/webhook"
 )
 
@@ -228,6 +229,13 @@ type fakeRunner struct {
 	err   error
 	calls []runner.Request
 
+	// respSeq/errSeq, when non-empty, override resp/err per call by index
+	// (call N uses respSeq[N]/errSeq[N]); once the slice is exhausted, Run
+	// falls back to resp/err. Lets a test simulate a runner whose first
+	// turn fails and a later retry succeeds.
+	respSeq []runner.Response
+	errSeq  []error
+
 	// If non-nil, called after Run() returns. Useful for tests that want
 	// to simulate the runner having modified files in the worktree.
 	onRun func(req runner.Request)
@@ -237,11 +245,19 @@ func (f *fakeRunner) Name() string { return "fake-runner" }
 func (f *fakeRunner) Run(_ context.Context, req runner.Request) (runner.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	idx := len(f.calls)
 	f.calls = append(f.calls, req)
 	if f.onRun != nil {
 		f.onRun(req)
 	}
-	return f.resp, f.err
+	resp, err := f.resp, f.err
+	if idx < len(f.respSeq) {
+		resp = f.respSeq[idx]
+	}
+	if idx < len(f.errSeq) {
+		err = f.errSeq[idx]
+	}
+	return resp, err
 }
 
 // --- Test fake: git.Git ---
@@ -1028,6 +1044,77 @@ func TestWork_RunnerFails(t *testing.T) {
 	}
 }
 
+// ADR-0092: a turn whose response has no valid decision marker must not
+// fail the unit immediately — work() feeds the parse error back to the
+// runner as Request.ParseFailure and retries the turn. Here the retry
+// succeeds, so the unit should ship normally with no failure.
+func TestWork_ParseFailure_RetriesThenSucceeds(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	parseErr := fmt.Errorf("parse claude output: %w; response was:\nI reformatted the file.", claude.ErrNoDecisionMarker)
+	fr := d.withRunner(t, &fakeRunner{
+		respSeq: []runner.Response{
+			{Summary: "I reformatted the file."},
+			{Decision: DecisionDone, Summary: "Migrated logrus calls to slog"},
+		},
+		errSeq: []error{parseErr, nil},
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("parse failure cleared by retry should ship normally, got %v", next)
+	}
+	if r.Object.LastError != "" {
+		t.Errorf("LastError should be empty once the retry succeeds; got %q", r.Object.LastError)
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("want 2 runner invocations (initial + one retry), got %d", len(fr.calls))
+	}
+	if fr.calls[0].ParseFailure != "" {
+		t.Errorf("first call should carry no ParseFailure, got %q", fr.calls[0].ParseFailure)
+	}
+	if fr.calls[1].ParseFailure == "" {
+		t.Errorf("retry call should carry the parse error as ParseFailure")
+	}
+	if len(r.Object.History) != 2 {
+		t.Errorf("both turns should be recorded in History, got %d", len(r.Object.History))
+	}
+}
+
+// ADR-0092: an unparseable response that persists past maxParseRetries must
+// fall back to the existing failure behaviour rather than retrying forever.
+func TestWork_ParseFailure_ExceedsCap_Fails(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	parseErr := fmt.Errorf("parse claude output: %w; response was:\nstill no marker", claude.ErrNoDecisionMarker)
+	fr := d.withRunner(t, &fakeRunner{err: parseErr})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusFailed {
+		t.Errorf("parse failure persisting past maxParseRetries should fail, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "no <syntropy-decision> marker") {
+		t.Errorf("LastError should propagate the parse error: %q", r.Object.LastError)
+	}
+	if want := maxParseRetries + 1; len(fr.calls) != want {
+		t.Errorf("want %d runner invocations (initial + %d retries), got %d", want, maxParseRetries, len(fr.calls))
+	}
+}
+
 func TestWork_RunnerDeclines(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
@@ -1752,6 +1839,78 @@ func TestResume_NoteAdded_HookRejection_ExceedsCap_Pauses(t *testing.T) {
 	}
 	if want := maxHookRetries + 1; len(rn.calls) != want {
 		t.Errorf("want %d runner invocations (initial + %d retries), got %d", want, maxHookRetries, len(rn.calls))
+	}
+}
+
+// ADR-0092: a turn whose response has no valid decision marker must not
+// pause immediately — invokeForEvent feeds the parse error back to the
+// runner as Request.ParseFailure and retries the turn. Here the retry
+// succeeds, so the run should push and resolve normally, with no pause.
+func TestResume_NoteAdded_ParseFailure_RetriesThenSucceeds(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	parseErr := fmt.Errorf("parse claude output: %w; response was:\nI reformatted the file.", claude.ErrNoDecisionMarker)
+	rn := d.withRunner(t, &fakeRunner{
+		respSeq: []runner.Response{
+			{Summary: "I reformatted the file."},
+			{Decision: DecisionDone, Summary: "Reformatted the file."},
+		},
+		errSeq: []error{parseErr, nil},
+	})
+	d.withGit(&fakeGit{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please fix the formatting", DiscussionID: "disc-parse"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("parse failure cleared by retry should stay AwaitingMerge, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("Run should not be paused once the retry succeeds; PauseReason=%q", r.Object.PauseReason)
+	}
+	if len(rn.calls) != 2 {
+		t.Fatalf("want 2 runner invocations (initial + one retry), got %d", len(rn.calls))
+	}
+	if rn.calls[0].ParseFailure != "" {
+		t.Errorf("first call should carry no ParseFailure, got %q", rn.calls[0].ParseFailure)
+	}
+	if rn.calls[1].ParseFailure == "" {
+		t.Errorf("retry call should carry the parse error as ParseFailure")
+	}
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-parse" {
+		t.Errorf("expected ResolveDiscussion(disc-parse); got %+v", fp.resolves)
+	}
+}
+
+// ADR-0092: an unparseable response that persists past maxParseRetries must
+// fall back to the existing pause behaviour rather than retrying forever.
+func TestResume_NoteAdded_ParseFailure_ExceedsCap_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	parseErr := fmt.Errorf("parse claude output: %w; response was:\nstill no marker", claude.ErrNoDecisionMarker)
+	rn := d.withRunner(t, &fakeRunner{err: parseErr})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please fix the formatting", DiscussionID: "disc-parse-cap"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("parse failure persisting past maxParseRetries should pause, got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "runner error") {
+		t.Errorf("PauseReason should mention the runner error; got %q", r.Object.PauseReason)
+	}
+	if want := maxParseRetries + 1; len(rn.calls) != want {
+		t.Errorf("want %d runner invocations (initial + %d retries), got %d", want, maxParseRetries, len(rn.calls))
 	}
 }
 

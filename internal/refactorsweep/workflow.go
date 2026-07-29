@@ -26,6 +26,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/git"
 	"github.com/andrewwormald/syntropy/internal/provider"
 	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/runner/claude"
 	"github.com/andrewwormald/syntropy/internal/setup"
 	"github.com/andrewwormald/syntropy/internal/webhook"
 )
@@ -707,27 +708,43 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		return StatusFailed, nil
 	}
 
-	resp, runErr := rn.Run(ctx, req)
-	turn := Turn{
-		Index:     len(r.Object.History),
-		UnitID:    unitID,
-		Runner:    rn.Name(),
-		Phase:     PhaseWork,
-		Summary:   resp.Summary,
-		Tokens:    resp.Tokens,
-		StartedAt: orNow(resp.StartedAt),
-		EndedAt:   orNow(resp.EndedAt),
-	}
-	if runErr != nil {
-		turn.Error = runErr.Error()
-	}
-	r.Object.History = append(r.Object.History, turn)
-	r.Object.SubagentInvocations++
-	r.Object.TotalTokens += resp.Tokens
+	// Bounded retry loop: a turn whose response has no valid decision marker
+	// gets fed the parse error back as Request.ParseFailure and one more
+	// runner turn to self-correct, rather than failing the unit immediately
+	// (ADR-0092). Bounded by maxParseRetries, mirroring invokeForEvent's
+	// hookRetries pattern (ADR-0075/ADR-0076).
+	var resp runner.Response
+	var runErr error
+	parseRetries := 0
+	for {
+		resp, runErr = rn.Run(ctx, req)
+		turn := Turn{
+			Index:     len(r.Object.History),
+			UnitID:    unitID,
+			Runner:    rn.Name(),
+			Phase:     PhaseWork,
+			Summary:   resp.Summary,
+			Tokens:    resp.Tokens,
+			StartedAt: orNow(resp.StartedAt),
+			EndedAt:   orNow(resp.EndedAt),
+		}
+		if runErr != nil {
+			turn.Error = runErr.Error()
+		}
+		r.Object.History = append(r.Object.History, turn)
+		r.Object.SubagentInvocations++
+		r.Object.TotalTokens += resp.Tokens
 
-	if runErr != nil {
-		r.Object.LastError = fmt.Sprintf("work: runner.Run: %v", runErr)
-		return StatusFailed, nil
+		if runErr != nil {
+			if errors.Is(runErr, claude.ErrNoDecisionMarker) && parseRetries < maxParseRetries {
+				parseRetries++
+				req.ParseFailure = runErr.Error()
+				continue
+			}
+			r.Object.LastError = fmt.Sprintf("work: runner.Run: %v", runErr)
+			return StatusFailed, nil
+		}
+		break
 	}
 
 	switch resp.Decision {
@@ -1217,7 +1234,10 @@ func (d *Deps) reactToNote(ctx context.Context, r *workflow.Run[AgentState, Agen
 // A Done/Continue commit rejected by the target repo's own pre-commit hook
 // doesn't pause immediately: the rejection is fed back to the runner as
 // Request.HookFailure for up to maxHookRetries retried turns before falling
-// back to the pause (ADR-0075/ADR-0076).
+// back to the pause (ADR-0075/ADR-0076). Likewise, a turn whose response has
+// no valid decision marker doesn't pause immediately either: the parse error
+// is fed back as Request.ParseFailure for up to maxParseRetries retried
+// turns before falling back to the pause (ADR-0092).
 //
 // Git push of any code changes the runner made is deferred to the next
 // commit (alongside work()'s push). Until then, status comments are still
@@ -1314,7 +1334,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	// Request.HookFailure and one more runner turn to self-correct, rather
 	// than pausing immediately for a human (ADR-0075/ADR-0076). Bounded by
 	// maxHookRetries, mirroring the DecisionRetryCI cap pattern (ADR-0069).
+	//
+	// Same treatment for a turn whose response had no valid decision marker:
+	// fed back as Request.ParseFailure for up to maxParseRetries retried
+	// turns before falling back to the pause (ADR-0092).
 	hookRetries := 0
+	parseRetries := 0
 	for {
 		resp, runErr := rn.Run(ctx, req)
 		turn := Turn{
@@ -1356,8 +1381,19 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		}
 
 		if runErr != nil {
-			// Runner had an infrastructure-level error (timeout, API down).
-			// Pause so the author can investigate; we still have the MR to
+			if errors.Is(runErr, claude.ErrNoDecisionMarker) && parseRetries < maxParseRetries {
+				// The runner's response had no valid decision marker —
+				// almost always something the runner itself can fix given
+				// the parse error (ADR-0092). Feed it back as ParseFailure
+				// and give the runner one more turn, up to maxParseRetries,
+				// before falling back to pausing for a human.
+				parseRetries++
+				req.ParseFailure = runErr.Error()
+				continue
+			}
+			// Runner had an infrastructure-level error (timeout, API down,
+			// or an unparseable response that exhausted its retries). Pause
+			// so the author can investigate; we still have the MR to
 			// recover with.
 			r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
@@ -1600,6 +1636,13 @@ const maxCIRetries = 3
 // runner synchronously in the same call, so there's no daemon-restart gap
 // to survive.
 const maxHookRetries = 2
+
+// maxParseRetries caps how many times, within a single work()/invokeForEvent
+// call, a turn whose response had no valid decision marker gets retried with
+// the parse error fed back as Request.ParseFailure (ADR-0092) before giving
+// up and pausing/failing like any other runner error. Scoped to one call,
+// same rationale as maxHookRetries.
+const maxParseRetries = 2
 
 // --- resume helpers ---
 
