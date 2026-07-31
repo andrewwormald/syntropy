@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1674,11 +1675,20 @@ const maxParseRetries = 2
 // risks blacklisting a unit that in fact landed. GetMRState is a fresh read
 // of the same MR right before acting, so it wins over the stale webhook
 // payload.
+//
+// If the re-verify read itself fails, the original "closed" webhook is
+// still the only signal we have — retrying the step would leave the unit
+// in-flight indefinitely against a provider that may be down for a while,
+// so we fall back to the webhook's word and blacklist, logging a Warn
+// so the ambiguity is visible instead of silently trusting an unverified
+// event.
 func (d *Deps) handleMRClosed(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	state, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
 	if err != nil {
-		return r.Status, fmt.Errorf("resume: re-verify MR closed state: %w", err)
+		slog.WarnContext(ctx, "resume: re-verify MR closed state failed; falling back to blacklist on unverified webhook",
+			"unit_id", unitID, "project_id", mr.ProjectID, "mr_iid", mr.IID, "error", err)
+		return d.markUnitBlacklisted(ctx, r, unitID, mr, "MR closed without merge (re-verify failed)"), nil
 	}
 	if state.State == "merged" {
 		return d.markUnitMerged(ctx, r, unitID, mr), nil
