@@ -1134,7 +1134,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 			case provider.EventMRMerged:
 				return d.markUnitMerged(ctx, r, unitID, ev.MR), nil
 			case provider.EventMRClosed:
-				return d.markUnitBlacklisted(ctx, r, unitID, ev.MR, "MR closed without merge"), nil
+				return d.handleMRClosed(ctx, r, unitID, ev.MR)
 			}
 		}
 		// No matching in-flight unit — cross-talk on an MR we no longer
@@ -1664,6 +1664,33 @@ const maxHookRetries = 2
 const maxParseRetries = 2
 
 // --- resume helpers ---
+
+// handleMRClosed re-verifies an EventMRClosed against the provider before
+// blacklisting the unit. Webhook delivery isn't ordered against the
+// provider's own read-your-writes guarantee: a "closed" webhook can arrive
+// while the platform is still finishing the eventual-consistency dance of
+// actually recording the MR as merged (GitLab/GitHub both transition through
+// a closing state as part of a merge), so trusting the event kind alone
+// risks blacklisting a unit that in fact landed. GetMRState is a fresh read
+// of the same MR right before acting, so it wins over the stale webhook
+// payload.
+func (d *Deps) handleMRClosed(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) (AgentStatus, error) {
+	p := d.Providers[r.Object.ProviderName]
+	state, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
+	if err != nil {
+		return r.Status, fmt.Errorf("resume: re-verify MR closed state: %w", err)
+	}
+	if state.State == "merged" {
+		return d.markUnitMerged(ctx, r, unitID, mr), nil
+	}
+	if state.State != "closed" {
+		// Neither merged nor closed by the fresh read (e.g. reopened) — the
+		// webhook event is stale. Leave the unit in-flight; reality will
+		// resolve on the next webhook or poll tick.
+		return r.Status, nil
+	}
+	return d.markUnitBlacklisted(ctx, r, unitID, mr, "MR closed without merge"), nil
+}
 
 func (d *Deps) markUnitMerged(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) AgentStatus {
 	delete(r.Object.InFlight, unitID)

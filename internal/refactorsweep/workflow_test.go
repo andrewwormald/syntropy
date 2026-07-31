@@ -66,6 +66,12 @@ type fakeProvider struct {
 	titleUpdates         []metadataUpdateCall
 	descriptionUpdateErr error
 	descriptionUpdates   []metadataUpdateCall
+
+	// mrState is what GetMRState reports; defaults to "closed" since most
+	// tests exercising EventMRClosed want the re-verify step (ADR pending)
+	// to confirm the close rather than override it.
+	mrState    string
+	mrStateErr error
 }
 
 type metadataUpdateCall struct {
@@ -180,7 +186,14 @@ func (f *fakeProvider) UpdateMRDescription(_ context.Context, projectID string, 
 	return f.descriptionUpdateErr
 }
 func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
-	return provider.MRState{State: "opened"}, nil
+	if f.mrStateErr != nil {
+		return provider.MRState{}, f.mrStateErr
+	}
+	state := f.mrState
+	if state == "" {
+		state = "closed"
+	}
+	return provider.MRState{State: state}, nil
 }
 func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) {
 	return nil, nil
@@ -2224,6 +2237,59 @@ func TestResume_MRClosed_MovesToBlacklisted(t *testing.T) {
 	}
 	if !strings.Contains(r.Object.Blacklisted[0].Reason, "closed without merge") {
 		t.Errorf("Blacklisted.Reason should mention close: %q", r.Object.Blacklisted[0].Reason)
+	}
+}
+
+// TestResume_MRClosed_ReVerifiesAgainstProvider_ActuallyMerged guards against
+// eventual consistency: a "closed" webhook can arrive while the provider is
+// still finishing recording the MR as merged. resume() must re-check with
+// GetMRState before blacklisting, and treat a fresh "merged" read as the
+// truth over the stale webhook payload.
+func TestResume_MRClosed_ReVerifiesAgainstProvider_ActuallyMerged(t *testing.T) {
+	d := newDeps(t, &fakeProvider{mrState: "merged"})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "svc-x", mr)
+
+	ev := provider.Event{Kind: provider.EventMRClosed, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("want Discovering, got %v", next)
+	}
+	if len(r.Object.Blacklisted) != 0 {
+		t.Errorf("svc-x should not be blacklisted when GetMRState reports merged; got %+v", r.Object.Blacklisted)
+	}
+	if len(r.Object.Completed) != 1 || r.Object.Completed[0].UnitID != "svc-x" {
+		t.Errorf("svc-x should be Completed instead; got %+v", r.Object.Completed)
+	}
+}
+
+// TestResume_MRClosed_ReVerifyErrorLeavesUnitInFlight asserts a GetMRState
+// error during the re-verify doesn't blacklist blind — it's returned as an
+// error so the step retries, and the unit stays in-flight until a later
+// event/poll can settle it.
+func TestResume_MRClosed_ReVerifyErrorLeavesUnitInFlight(t *testing.T) {
+	d := newDeps(t, &fakeProvider{mrStateErr: errors.New("provider unavailable")})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "svc-x", mr)
+
+	ev := provider.Event{Kind: provider.EventMRClosed, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err == nil {
+		t.Fatal("want error when GetMRState fails during re-verify")
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want status unchanged (StatusAwaitingMerge), got %v", next)
+	}
+	if len(r.Object.Blacklisted) != 0 {
+		t.Errorf("svc-x should not be blacklisted when re-verify errors; got %+v", r.Object.Blacklisted)
+	}
+	if _, still := r.Object.InFlight["svc-x"]; !still {
+		t.Errorf("svc-x should remain in InFlight when re-verify errors")
 	}
 }
 
