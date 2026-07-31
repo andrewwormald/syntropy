@@ -506,7 +506,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 	case DecisionAsk:
 		// Planner needs the author's input. Park; the answer will arrive
 		// via comment on the most recent MR (or a new comment thread).
-		r.Object.PauseReason = "planner asks: " + resp.Question
+		r.Object.PauseReason = askPausePrefix + resp.Question
 		return StatusPaused, nil
 
 	case DecisionFail:
@@ -1579,7 +1579,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			return StatusAwaitingMerge, nil
 		case DecisionAsk:
 			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
-			r.Object.PauseReason = resp.Question
+			r.Object.PauseReason = askPausePrefix + resp.Question
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 			return StatusPaused, nil
@@ -1681,6 +1681,17 @@ func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentSta
 // parking a Run due to a provider authentication failure. The poller checks
 // for this prefix on recovery to distinguish auth-pauses from human-pauses.
 const providerAuthPausePrefix = "provider-auth: "
+
+// askPausePrefix is the PauseReason prefix the workflow uses at both
+// DecisionAsk call sites (discoverSpec and invokeForEvent). A DecisionAsk
+// pause is the one pause a plain freeform reply should be able to resolve —
+// it's literally waiting on an answer to the question in PauseReason —
+// whereas every other pause reason (a filter pause, a git failure, a hook
+// rejection, ...) must not be un-paused by ordinary conversation. Marking
+// DecisionAsk pauses with this prefix lets that distinction be made by
+// checking strings.HasPrefix(PauseReason, askPausePrefix), the same pattern
+// providerAuthPausePrefix above uses for auth-pauses. See ADR-0094.
+const askPausePrefix = "ask: "
 
 // handleProviderAuthEvent handles EventProviderAuthFailure and
 // EventProviderAuthRestored events synthesised by the poller (ADR-0038).
