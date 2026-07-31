@@ -900,6 +900,94 @@ func TestWork_HappyPath(t *testing.T) {
 	}
 }
 
+// TestWork_InitialComment_QueueEmpty_NotesLastOne covers the "last one"
+// signal: when opening the MR leaves the sweep Queue empty, the initial
+// status comment should flag it as a plain observation, not a count.
+func TestWork_InitialComment_QueueEmpty_NotesLastOne(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "did it"}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		Queue:        nil, // already drained by discoverSweep before work() runs
+		InFlight:     map[string]provider.MR{},
+	})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 42}
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.comments) != 1 {
+		t.Fatalf("expected an initial status comment; got %d", len(fp.comments))
+	}
+	if !strings.Contains(fp.comments[0].Body, "last one") {
+		t.Errorf("expected the initial comment to note the empty queue; got: %q", fp.comments[0].Body)
+	}
+}
+
+// TestWork_InitialComment_QueueNonEmpty_NoLastOneNote is the counterpart:
+// units still queued means we must not claim this is the last one.
+func TestWork_InitialComment_QueueNonEmpty_NoLastOneNote(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "did it"}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		Queue:        []string{"svc-orders"},
+		InFlight:     map[string]provider.MR{},
+	})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 42}
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.comments) != 1 {
+		t.Fatalf("expected an initial status comment; got %d", len(fp.comments))
+	}
+	if strings.Contains(fp.comments[0].Body, "last one") {
+		t.Errorf("comment should not claim last-one when the queue still has units; got: %q", fp.comments[0].Body)
+	}
+}
+
+// TestWork_InitialComment_SpecMode_NoLastOneNote: spec mode never populates
+// Queue, so an empty Queue there carries no signal — the note must not fire.
+func TestWork_InitialComment_SpecMode_NoLastOneNote(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "did it"}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Mode:         ModeSpec,
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+	})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 42}
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.comments) != 1 {
+		t.Fatalf("expected an initial status comment; got %d", len(fp.comments))
+	}
+	if strings.Contains(fp.comments[0].Body, "last one") {
+		t.Errorf("spec mode should never emit the last-one note; got: %q", fp.comments[0].Body)
+	}
+}
+
 // TestWork_MRTitle_UsesRunnerSuggestion covers ADR-0054: when the runner
 // reports a Title (phrased per BaseRepo's .syntropy.yml title_convention),
 // CreateMR must use it verbatim instead of the "Goal: unitID" default.
