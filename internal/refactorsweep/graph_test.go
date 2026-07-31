@@ -15,6 +15,7 @@ import (
 
 	"github.com/andrewwormald/syntropy/internal/eventstream"
 	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/runner"
 	"github.com/andrewwormald/syntropy/internal/store"
 )
 
@@ -205,9 +206,15 @@ func integrationDeps(t *testing.T) Deps {
 		TimeoutStore:  memtimeoutstore.New(),
 		EventStreamer: streamer,
 		RoleScheduler: memrolescheduler.New(),
-		// Providers/Runners/Git left empty — the Paused-self-loop path
-		// in resume() doesn't invoke any of them (early return before
-		// the runner is reached).
+		// Runners must be a non-nil (if empty) registry: the
+		// Paused-self-loop path now reaches invokeForEvent for a
+		// freeform reply on a non-Ask pause (ADR-0094 follow-on), and
+		// Registry.Get on a nil *Registry panics instead of erroring.
+		// An empty registry still returns a clean "unknown runner"
+		// error, which is an acceptable non-graph error for this test.
+		Runners: runner.NewRegistry(),
+		// Providers/Git left empty — invokeForEvent returns before
+		// touching either once Runners.Get fails above.
 	}
 }
 

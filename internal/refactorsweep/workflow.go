@@ -1143,9 +1143,28 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 
 	// While paused, only control commands and MR lifecycle truth (handled
-	// above) progress the Run. All other inbound events are noted
-	// (EventsSeen above) but produce no transition.
+	// above) progress the Run — with one exception. A freeform reply
+	// (EventNoteAdded) to an askPausePrefix pause (ADR-0094) is the literal
+	// answer to the question the Run is parked on, so it's let through to
+	// invokeForEvent and whatever it decides is allowed to move the Run off
+	// Paused, exactly like any other invokeForEvent call. A freeform reply
+	// during every other kind of pause (a hook rejection, a git failure, a
+	// filter pause, ...) still reaches the runner — it may be useful
+	// context for the subagent — but the resulting status is forced back
+	// to Paused: only an explicit control command may clear a non-Ask
+	// pause. Everything else (no in-flight unit for this MR, or a non-note
+	// event) is noted (EventsSeen above) but produces no transition.
 	if r.Status == StatusPaused {
+		unitID := unitForMR(r.Object.InFlight, ev.MR)
+		if unitID == "" || ev.Kind != provider.EventNoteAdded {
+			return StatusPaused, nil
+		}
+		if strings.HasPrefix(r.Object.PauseReason, askPausePrefix) {
+			return d.invokeForEvent(ctx, r, unitID, ev)
+		}
+		if _, err := d.invokeForEvent(ctx, r, unitID, ev); err != nil {
+			return StatusPaused, err
+		}
 		return StatusPaused, nil
 	}
 

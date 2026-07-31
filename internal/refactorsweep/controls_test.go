@@ -189,6 +189,38 @@ func TestCmdResume(t *testing.T) {
 	}
 }
 
+// TestCmdResume_NoInFlightUnits_ReturnsDiscovering covers point 4:
+// cmdResume must not claim StatusAwaitingMerge (a watched, open MR) when
+// the Run paused via discoverSpec's DecisionAsk — before any unit had an
+// MR, so InFlight is empty. It should route back to StatusDiscovering
+// instead, which is exactly the destination the workflow graph already
+// declares as valid from Paused (see workflow.go's Build) but that no
+// code path previously returned.
+func TestCmdResume_NoInFlightUnits_ReturnsDiscovering(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    mr.ProjectID,
+		RunnerName:   "fake-runner",
+		Goal:         "test goal",
+		Author:       provider.User{Handle: "andreww"},
+		InFlight:     map[string]provider.MR{}, // no unit started yet
+	})
+	r.Status = StatusPaused
+	r.Object.PauseReason = askPausePrefix + "which service should I start with?"
+
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy resume", mr)))
+	if next != StatusDiscovering {
+		t.Errorf("want Discovering when no unit is in flight, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("PauseReason should be cleared; got %q", r.Object.PauseReason)
+	}
+}
+
 func TestCmdSkip(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)

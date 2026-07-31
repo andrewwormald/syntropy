@@ -142,3 +142,4 @@ forces or unlocks.
 | 0092 | Feed unparseable decision markers back to the runner as `ParseFailure` | Accepted | 2026-07-29 |
 | 0093 | Poller dispatches Runs concurrently, bounded by a semaphore              | Accepted | 2026-07-29 |
 | 0094 | `askPausePrefix` marks `DecisionAsk` pauses for freeform resume          | Accepted | 2026-07-31 |
+| 0095 | The Paused gate lets `askPausePrefix` resume, forces every other pause to stay put | Accepted | 2026-07-31 |
