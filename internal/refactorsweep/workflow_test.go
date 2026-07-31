@@ -2267,11 +2267,12 @@ func TestResume_MRClosed_ReVerifiesAgainstProvider_ActuallyMerged(t *testing.T) 
 	}
 }
 
-// TestResume_MRClosed_ReVerifyErrorLeavesUnitInFlight asserts a GetMRState
-// error during the re-verify doesn't blacklist blind — it's returned as an
-// error so the step retries, and the unit stays in-flight until a later
-// event/poll can settle it.
-func TestResume_MRClosed_ReVerifyErrorLeavesUnitInFlight(t *testing.T) {
+// TestResume_MRClosed_ReVerifyErrorFallsBackToBlacklist asserts a GetMRState
+// error during the re-verify doesn't retry indefinitely against a possibly-
+// down provider — it falls back to the original "closed" webhook's word and
+// blacklists the unit (with a Warn logged for the ambiguity), same as a
+// confirmed-closed re-verify.
+func TestResume_MRClosed_ReVerifyErrorFallsBackToBlacklist(t *testing.T) {
 	d := newDeps(t, &fakeProvider{mrStateErr: errors.New("provider unavailable")})
 	d.withRunner(t, &fakeRunner{})
 	mr := provider.MR{ProjectID: "x/y", IID: 7}
@@ -2279,17 +2280,17 @@ func TestResume_MRClosed_ReVerifyErrorLeavesUnitInFlight(t *testing.T) {
 
 	ev := provider.Event{Kind: provider.EventMRClosed, MR: mr}
 	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
-	if err == nil {
-		t.Fatal("want error when GetMRState fails during re-verify")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
 	}
-	if next != StatusAwaitingMerge {
-		t.Errorf("want status unchanged (StatusAwaitingMerge), got %v", next)
+	if next != StatusDiscovering {
+		t.Errorf("want Discovering, got %v", next)
 	}
-	if len(r.Object.Blacklisted) != 0 {
-		t.Errorf("svc-x should not be blacklisted when re-verify errors; got %+v", r.Object.Blacklisted)
+	if len(r.Object.Blacklisted) != 1 || r.Object.Blacklisted[0].UnitID != "svc-x" {
+		t.Errorf("svc-x should be blacklisted when re-verify errors; got %+v", r.Object.Blacklisted)
 	}
-	if _, still := r.Object.InFlight["svc-x"]; !still {
-		t.Errorf("svc-x should remain in InFlight when re-verify errors")
+	if _, still := r.Object.InFlight["svc-x"]; still {
+		t.Errorf("svc-x should no longer be in InFlight once blacklisted")
 	}
 }
 
