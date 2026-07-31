@@ -877,6 +877,13 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 				body += "\n\nDiff: " + stat
 			}
 		}
+		// Queue is only a meaningful signal in sweep mode (spec mode leaves
+		// it empty throughout — see AgentState.Queue doc). A plain signal,
+		// not a running count: the queue can still grow before this MR
+		// merges, so don't promise anything stronger than "looks like".
+		if !r.Object.IsSpecMode() && len(r.Object.Queue) == 0 {
+			body += "\n\nThis looks like the last one — the queue is empty."
+		}
 		if err := postBotComment(ctx, r, p, r.Object.ProjectID, mr.IID, body); err != nil {
 			// Comment failure is non-fatal — the MR exists, the run continues.
 			r.Object.LastError = fmt.Sprintf("post initial comment: %v", err)
