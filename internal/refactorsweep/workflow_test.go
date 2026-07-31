@@ -3156,24 +3156,71 @@ func TestResume_NoteAdded_NotIsolatedWorktree_Pauses(t *testing.T) {
 
 // Control-command dispatch is covered in controls_test.go.
 
-func TestResume_PausedRun_DropsNonControlEvents(t *testing.T) {
+// TestResume_PausedRun_NonAskFreeform_StaysPausedButRunnerStillSees_It is
+// the non-Ask half of ADR-0094's follow-on: a pause reason without
+// askPausePrefix (a hook rejection, a git failure, a filter pause, ...)
+// must never be silently cleared by an ordinary reply comment — but the
+// reply still reaches the runner as potential context, since the pause
+// itself doesn't mean the subagent should stop listening. DecisionDone
+// from the fakeRunner would normally move a Run to StatusAwaitingMerge;
+// here it must not, because PauseReason carries no askPausePrefix.
+func TestResume_PausedRun_NonAskFreeform_StaysPausedButRunnerStillSeesIt(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "noted"}})
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 	r.Status = StatusPaused
+	r.Object.PauseReason = "git Push failed during work: connection reset"
 
 	ev := provider.Event{
 		Kind: provider.EventNoteAdded,
 		MR:   mr, Author: provider.User{Handle: "reviewer"},
 		Note: provider.Note{Body: "any chance you can also look at this"},
 	}
-	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
-	if next != StatusPaused {
-		t.Errorf("paused Run should stay paused on non-control event, got %v", next)
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
 	}
-	if r.Object.SubagentInvocations != 0 {
-		t.Errorf("no subagent should fire while paused; got %d", r.Object.SubagentInvocations)
+	if next != StatusPaused {
+		t.Errorf("non-Ask pause must stay Paused regardless of the runner's decision, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("runner should still see the freeform reply while paused; got %d calls", len(fr.calls))
+	}
+	if r.Object.PauseReason != "git Push failed during work: connection reset" {
+		t.Errorf("PauseReason must survive untouched; got %q", r.Object.PauseReason)
+	}
+}
+
+// TestResume_PausedRun_AskPause_FreeformReplyCanResume verifies point 2 of
+// ADR-0094's follow-on: once the Paused gate lets an askPausePrefix pause's
+// freeform reply through to invokeForEvent, the existing DecisionDone
+// branch there (which unconditionally sets StatusAwaitingMerge) resumes
+// the Run — no separate resume-on-Ask code path is needed, the ordinary
+// invokeForEvent decision switch already does the right thing once it's
+// reachable.
+func TestResume_PausedRun_AskPause_FreeformReplyCanResume(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "answered"}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = askPausePrefix + "should the retry cap be 3 or 5?"
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   mr, Author: provider.User{Handle: "reviewer"},
+		Note: provider.Note{Body: "let's go with 5"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("an askPausePrefix pause should let the reply resume the Run, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("runner should be invoked with the answer; got %d calls", len(fr.calls))
 	}
 }
 

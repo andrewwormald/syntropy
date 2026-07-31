@@ -208,14 +208,29 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 	return StatusPaused, nil
 }
 
-// cmdResume clears the paused state. The next inbound webhook will drive
-// the next transition normally.
+// cmdResume clears the paused state. Which status it hands back to has to
+// be honest about what's actually true: StatusAwaitingMerge claims an MR is
+// open and being watched, but a Run paused via discoverSpec's DecisionAsk
+// (askPausePrefix, ADR-0094) parked *before* any unit's MR existed —
+// markUnitMerged/markUnitBlacklisted always empty InFlight before handing
+// off to StatusDiscovering, so InFlight is empty at that point and stays
+// that way until the next unit starts. Unconditionally returning
+// StatusAwaitingMerge there would claim a webhook-watched MR that doesn't
+// exist; StatusDiscovering (a valid Paused-callback destination, see
+// workflow.go's Build) is the honest one — it re-invokes the planner with
+// the author's answer now in context. Every other pause has at least one
+// in-flight unit, so StatusAwaitingMerge is correct there.
 func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
-		fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle))
-	return StatusAwaitingMerge, nil
+	next := StatusAwaitingMerge
+	msg := fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle)
+	if len(r.Object.InFlight) == 0 {
+		next = StatusDiscovering
+		msg = fmt.Sprintf("▶️ Resumed per @%s. Re-running discovery with your answer.", ev.Author.Handle)
+	}
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, msg)
+	return next, nil
 }
 
 // cmdSkip blacklists the current unit and closes its MR. Refactor moves on
