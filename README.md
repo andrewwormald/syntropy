@@ -130,12 +130,11 @@ For each service still importing `internal/legacy`, switch to
 `internal/v2`. Preserve public function signatures.
 YAML
 
-# Build from source (skip if you installed a prebuilt binary above) + start the daemon (poll mode; no public URL needed).
-go build -o syntropy .
-./syntropy daemon --commit-author "Your Name" --commit-email "you@example.com" &
+# Start the daemon (poll mode; no public URL needed) — using the release binary installed above.
+syntropy daemon --commit-author "Your Name" --commit-email "you@example.com" &
 
 # Trigger.
-./syntropy start --spec ~/syntropy-specs/migrate.spec.md
+syntropy start --spec ~/syntropy-specs/migrate.spec.md
 ```
 
 The first MR appears on the target repo within a minute or two. Review it, merge it, and the next opens automatically.
