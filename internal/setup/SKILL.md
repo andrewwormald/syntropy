@@ -80,15 +80,38 @@ directly.
    Without this, MRs/PRs default to a generic `<goal>: <unit-id>` title —
    which can badly violate a repo's real conventions (e.g. an 80-char CI
    title-length check) and isn't obvious until CI already failed on it.
-3. **Start the daemon** (if one isn't already running):
+3. **Render the spec for review before triggering it — every time you
+   write a new one.** A spec is a real decision (scope, constraints, what
+   gets built) made on the user's behalf; it shouldn't sit invisibly on
+   disk until it's already running. Once the spec file is written and
+   `config check` (if needed) has passed, present the spec's actual
+   content — goal, provider/project, full body — in whatever durable,
+   shareable, reviewable form your own environment supports, before
+   calling `syntropy start`:
+   - If you have an artifact/canvas/preview capability (e.g. Claude
+     Code's Artifact tool), use it — render the spec as a clean document
+     the user can actually read, not a wall of raw markdown in the
+     conversation. Keep the treatment plain and legible (this is a spec
+     for review, not a pitch); a compact frontmatter summary plus the
+     rendered body plus the exact `syntropy start` command it'll run is
+     enough.
+   - If your environment has no such capability, the fallback is still to
+     make the full spec visibly reviewable in-conversation (not just "spec
+     written, starting now") — print the complete spec body, not a
+     one-line summary, so the user is reviewing the actual thing that will
+     run.
+   Wait for the user's go-ahead before triggering unless they've already
+   told you (this session or standing instructions) to proceed
+   automatically once a spec's ready — don't ask again if they have.
+4. **Start the daemon** (if one isn't already running):
    ```bash
    syntropy daemon --commit-author "Name" --commit-email "you@example.com" &
    ```
-3. **Trigger the run:**
+5. **Trigger the run:**
    ```bash
    syntropy start --spec path/to/your.spec.md
    ```
-4. **Check progress** any time with:
+6. **Check progress** any time with:
    ```bash
    syntropy status <run-id>
    syntropy list
