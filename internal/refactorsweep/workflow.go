@@ -93,11 +93,15 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	b.AddStep(StatusWorking, d.work,
 		StatusAwaitingMerge, // MR opened, await events
 		StatusDiscovering,   // runner returned Done but worktree clean → blacklist + next unit
-		StatusFailed,        // unrecoverable (runner err, MR create err, push err)
+		StatusPaused,        // transient runner/git error pre-MR → pause + retry, not a permanent fail
+		StatusFailed,        // unrecoverable (bad config, or resume/abandon-driven abandonment)
 	).WithOptions(stepOpts...)
-	// Note: StatusPaused not yet a destination from Working. Once an MR
-	// exists in InFlight, the resume callback owns pause/retry/skip; work()
-	// can only fail before that point.
+	// StatusPaused is now a valid destination from Working: once work()'s
+	// body is updated (a later increment) to distinguish transient
+	// runner/git failures from unrecoverable config errors, it can return
+	// StatusPaused for the former without the graph rejecting the
+	// transition. Until that body change lands, work() still only ever
+	// returns StatusFailed on error.
 
 	b.AddCallback(StatusAwaitingMerge, d.resume,
 		StatusAwaitingMerge,
@@ -111,6 +115,7 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	b.AddCallback(StatusPaused, d.resume,
 		StatusPaused,                 // stay paused (event filtered or non-control note arrived)
 		StatusAwaitingMerge,
+		StatusWorking,                // resume from a pre-MR pause → retry work() for CurrentUnit
 		StatusDiscovering,
 		StatusFailed,
 		StatusCancelled,              // /syntropy stop from paused
