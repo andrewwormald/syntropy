@@ -92,6 +92,20 @@ Reach for syntropy when:
 
 **What it's not for:** a single small, one-shot edit. If the change doesn't decompose into multiple independently-mergeable units, just make it directly — spinning up a daemon and a spec for one file is pure overhead.
 
+## Where this fits
+
+Syntropy works *with* your existing tools, not instead of them. It's worth being precise about the categories nearby, since none of them do the specific job syntropy does:
+
+| Category | Examples | Relationship to syntropy |
+|---|---|---|
+| **PR/MR review bots** | [Hermes Agent](https://hermes-agent.nousresearch.com/), CodeRabbit, Greptile | Analyze PRs that already exist and post findings. Complementary — one of these can review every MR syntropy opens. |
+| **Async issue-to-PR agents** | GitHub Copilot coding agent, Google Jules, Sweep.dev | Take one issue, return one PR, autonomously. Great for a discrete task; not built to decompose one large sweep into an ordered, human-paced chain. |
+| **Deterministic bulk-codemod tools** | OpenRewrite, Sourcegraph Batch Changes | Run fixed recipes/AST transforms across many repos, opening tracked PRs. The closest *mechanical* analog — but no reasoning for judgment calls, addressing review feedback, or diagnosing a novel CI failure. Complementary for the purely mechanical portion of a sweep. |
+| **AI-driven PR stacking** | Devin's Stacked PRs (Cognition Labs) | Decomposes one task into a stack of smaller, reviewable PRs — the closest AI competitor. Closed, hosted platform; the stack's layers exist together, reviewed in parallel. |
+| **Native platform stacking** | GitHub Stacked Pull Requests (public preview, 2026), GitLab's native stacked MRs | Auto-rebase and retarget every layer when the one below it merges — genuinely solves the old manual-rebase pain of stacked diffs. |
+
+**The stacking difference that matters:** in every stacking model above — native or AI-driven — the whole stack tends to exist upfront, all layers open in parallel before any of them merge. If review feedback on an early layer requires a change, every layer above it needs an automatic rebase and retarget, and reviewers of those downstream PRs often need to re-confirm after it. Syntropy never builds a stack: with the default concurrency of one, the next MR isn't even written until the current one merges. Addressing feedback mid-sweep is just pushing a commit to the one open MR — there's nothing downstream to rebase, retarget, or re-review, because nothing downstream has been created yet.
+
 ## Install
 
 You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
