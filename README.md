@@ -74,7 +74,7 @@ Comments are syntropy's only communication channel. Reply with `/syntropy pause`
 - **Event-driven.** Polls the provider every 30 seconds by default (zero token cost; ADR-0031). Webhook mode available for sub-second latency on hosts with a stable public URL.
 - **Per-unit git worktree.** Each MR's runner works in `~/.syntropy/runs/<runID>/worktrees/<unitID>` — no contamination of your main checkout.
 - **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub (ADR-0034). The reviewer sees their comment close itself.
-- **Pluggable runner.** Claude is the only shipping adapter today; Qwen / OpenHands / a local script all fit the `runner.Runner` interface.
+- **Pluggable runner, other agents/harnesses planned.** Claude Code is the only shipping adapter today, but extending beyond it is a design goal, not an afterthought — starting with the other most globally-used coding agents/harnesses (GitHub Copilot, Cursor, OpenAI's Codex CLI, OpenCode), plus Qwen Code, OpenHands, or a local script. Anything fitting the `runner.Runner` interface (ADR-0007) plugs in without touching the core state machine.
 
 Full architecture: [`DESIGN.md`](DESIGN.md). Every meaningful design choice has an ADR in [`decisions/`](decisions/).
 
@@ -92,15 +92,27 @@ Reach for syntropy when:
 
 **What it's not for:** a single small, one-shot edit. If the change doesn't decompose into multiple independently-mergeable units, just make it directly — spinning up a daemon and a spec for one file is pure overhead.
 
+## Where this fits
+
+Syntropy works *with* your existing tools, not instead of them. It's worth being precise about the categories nearby, since none of them do the specific job syntropy does:
+
+| Category | Examples | Relationship to syntropy |
+|---|---|---|
+| **Interactive coding assistants (session-driven)** | Claude Code and similar terminal coding assistants | Not a competitor — a substrate. Claude Code is the only shipping `Runner` adapter today (shells out to `claude -p`), but the interface is deliberately generic and not locked to one vendor — extending to the other most globally-used coding agents/harnesses (GitHub Copilot, Cursor, OpenAI's Codex CLI, OpenCode) is a planned direction, alongside Qwen Code, OpenHands, or a local script. These need a human actively driving the session in real time; syntropy is what keeps working after you close the laptop, whichever agent is doing the work. |
+| **PR/MR review bots (single-purpose)** | CodeRabbit, Greptile | Analyze PRs that already exist and post findings. Complementary — one of these can review every MR syntropy opens. |
+| **General-purpose always-on agent frameworks** | [Hermes Agent](https://hermes-agent.nousresearch.com/), OpenClaw, IronClaw | Persistent, multi-channel (Telegram/Slack/Discord/etc.) personal or team agents with cross-session memory. Hermes's GitHub PR-review capability is a *skill* bolted onto this kind of framework, not a native lifecycle feature — none of these decompose or pace a sweep. |
+| **Async issue-to-PR agents** | GitHub Copilot coding agent, Google Jules, Sweep.dev | Take one issue, return one PR, autonomously. Great for a discrete task; not built to decompose one large sweep into an ordered, human-paced chain. |
+| **Deterministic bulk-codemod tools** | OpenRewrite, Sourcegraph Batch Changes | Run fixed recipes/AST transforms across many repos, opening tracked PRs. The closest *mechanical* analog — but no reasoning for judgment calls, addressing review feedback, or diagnosing a novel CI failure. Complementary for the purely mechanical portion of a sweep. |
+| **AI-driven PR stacking** | Devin's Stacked PRs (Cognition Labs) | Decomposes one task into a stack of smaller, reviewable PRs — the closest AI competitor. Closed, hosted platform; the stack's layers exist together, reviewed in parallel. |
+| **Native platform stacking** | GitHub Stacked Pull Requests (public preview, 2026), GitLab's native stacked MRs | Auto-rebase and retarget every layer when the one below it merges — genuinely solves the old manual-rebase pain of stacked diffs. |
+
+**The stacking difference that matters:** in every stacking model above — native or AI-driven — the whole stack tends to exist upfront, all layers open in parallel before any of them merge. If review feedback on an early layer requires a change, every layer above it needs an automatic rebase and retarget, and reviewers of those downstream PRs often need to re-confirm after it. Syntropy never builds a stack: with the default concurrency of one, the next MR isn't even written until the current one merges. Addressing feedback mid-sweep is just pushing a commit to the one open MR — there's nothing downstream to rebase, retarget, or re-review, because nothing downstream has been created yet.
+
 ## Install
 
-You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
+You need: `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
 
-The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `./syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
-
-### Installing a prebuilt binary
-
-**Always install from the prebuilt release — do not `git clone` and `go build`.** Building from source skips goreleaser's version/commit stamping, is slower, and pulls in a full Go toolchain for no benefit; every tagged release already ships a binary for your platform. If you're an AI agent asked to "install syntropy," this is the one and only path — go straight to [GitHub Releases](https://github.com/andrewwormald/syntropy/releases), don't reach for `go install` or a source build.
+**Always install the prebuilt release — never `git clone` and build from source.** Every tagged release already ships a binary for your platform with proper version/commit stamping; building from source is slower and needs a full Go toolchain for no benefit. If you're an AI agent asked to "install syntropy," this is the one and only path — go straight to [GitHub Releases](https://github.com/andrewwormald/syntropy/releases).
 
 Download the archive matching your OS/arch (`syntropy_<version>_<os>_<arch>.tar.gz`, e.g. `darwin_arm64` or `linux_amd64`), extract it, and put the `syntropy` binary on your `$PATH`:
 
@@ -109,6 +121,8 @@ tar -xzf syntropy_*_darwin_arm64.tar.gz
 chmod +x syntropy
 mv syntropy /usr/local/bin/
 ```
+
+The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
 
 ```bash
 # Write a spec.
@@ -153,7 +167,7 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 - **Per-unit git worktree.** Each MR's runner works in its own isolated worktree — no contamination of your main checkout, no cross-unit interference.
 - **Durable state machine.** Sqlite-backed; survives a daemon restart mid-Run and can sleep idle for days between events.
 - **Two-tap abandonment.** `/syntropy abandon` requires a confirming second tap within a 12h window before a Run is actually killed — no accidental stops from a stray comment.
-- **Pluggable runner and provider.** Claude ships today; the `Runner` interface (Qwen, OpenHands, a local script) and the `Provider` interface (GitLab, GitHub) are both designed to take more adapters without touching the core state machine.
+- **Pluggable runner and provider — other coding agents/harnesses are on the roadmap.** Claude Code ships today; the `Runner` interface is built to extend to the other most globally-used coding agents/harnesses (GitHub Copilot, Cursor, OpenAI's Codex CLI, OpenCode) as well as Qwen Code, OpenHands, or a local script. The `Provider` interface (GitLab, GitHub) takes more adapters the same way — supporting more agents and harnesses is a stated direction, not just a theoretical extension point.
 - **Repo-aware MR conventions.** Reads a per-repo title convention from `.syntropy.yml` and threads it into every MR title the runner generates, instead of a generic `<goal>: <unit-id>` default.
 - **Retention cleanup.** Terminal Runs' worktrees, on-disk artifacts, and durable-store rows are automatically cleaned up after a configurable retention window (31 days by default).
 
