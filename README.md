@@ -110,13 +110,9 @@ Syntropy works *with* your existing tools, not instead of them. It's worth being
 
 ## Install
 
-You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
+You need: `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
 
-The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `./syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
-
-### Installing a prebuilt binary
-
-**Always install from the prebuilt release — do not `git clone` and `go build`.** Building from source skips goreleaser's version/commit stamping, is slower, and pulls in a full Go toolchain for no benefit; every tagged release already ships a binary for your platform. If you're an AI agent asked to "install syntropy," this is the one and only path — go straight to [GitHub Releases](https://github.com/andrewwormald/syntropy/releases), don't reach for `go install` or a source build.
+**Always install the prebuilt release — never `git clone` and build from source.** Every tagged release already ships a binary for your platform with proper version/commit stamping; building from source is slower and needs a full Go toolchain for no benefit. If you're an AI agent asked to "install syntropy," this is the one and only path — go straight to [GitHub Releases](https://github.com/andrewwormald/syntropy/releases).
 
 Download the archive matching your OS/arch (`syntropy_<version>_<os>_<arch>.tar.gz`, e.g. `darwin_arm64` or `linux_amd64`), extract it, and put the `syntropy` binary on your `$PATH`:
 
@@ -125,6 +121,8 @@ tar -xzf syntropy_*_darwin_arm64.tar.gz
 chmod +x syntropy
 mv syntropy /usr/local/bin/
 ```
+
+The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
 
 ```bash
 # Write a spec.
