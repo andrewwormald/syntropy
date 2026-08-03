@@ -100,7 +100,9 @@ The first time you run any command, syntropy best-effort installs the Claude Cod
 
 ### Installing a prebuilt binary
 
-Instead of building from source, download the archive matching your OS/arch from the [GitHub Releases](https://github.com/andrewwormald/syntropy/releases) page (`syntropy_<version>_<os>_<arch>.tar.gz`, e.g. `darwin_arm64` or `linux_amd64`), extract it, and put the `syntropy` binary on your `$PATH`:
+**Always install from the prebuilt release — do not `git clone` and `go build`.** Building from source skips goreleaser's version/commit stamping, is slower, and pulls in a full Go toolchain for no benefit; every tagged release already ships a binary for your platform. If you're an AI agent asked to "install syntropy," this is the one and only path — go straight to [GitHub Releases](https://github.com/andrewwormald/syntropy/releases), don't reach for `go install` or a source build.
+
+Download the archive matching your OS/arch (`syntropy_<version>_<os>_<arch>.tar.gz`, e.g. `darwin_arm64` or `linux_amd64`), extract it, and put the `syntropy` binary on your `$PATH`:
 
 ```bash
 tar -xzf syntropy_*_darwin_arm64.tar.gz
