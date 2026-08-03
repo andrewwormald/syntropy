@@ -221,6 +221,69 @@ func TestCmdResume_NoInFlightUnits_ReturnsDiscovering(t *testing.T) {
 	}
 }
 
+// TestCmdResume_PreMRPause_ReturnsWorking covers ADR-0097: a Run paused by
+// work()'s pauseWork (a transient runner/git error before any MR existed for
+// CurrentUnit) must retry work() itself, not fall back to StatusDiscovering
+// — which would abandon CurrentUnit and re-plan from scratch — or claim
+// StatusAwaitingMerge for an MR that was never opened. The triggering event
+// carries a zero-value MR, mirroring the real controlHandler synthesising a
+// /syntropy resume note with no in-flight MR to attach it to.
+func TestCmdResume_PreMRPause_ReturnsWorking(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		RunnerName:   "fake-runner",
+		Goal:         "test goal",
+		Author:       provider.User{Handle: "andreww"},
+		CurrentUnit:  "svc-x",
+		InFlight:     map[string]provider.MR{}, // pre-MR: work() hasn't opened one yet
+	})
+	r.Status = StatusPaused
+	r.Object.PauseReason = `transient error working on unit "svc-x": git Push: connection reset`
+
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy resume", provider.MR{})))
+	if next != StatusWorking {
+		t.Errorf("want Working for a pre-MR pause, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("PauseReason should be cleared; got %q", r.Object.PauseReason)
+	}
+	if r.Object.CurrentUnit != "svc-x" {
+		t.Errorf("CurrentUnit should be preserved for the retry; got %q", r.Object.CurrentUnit)
+	}
+}
+
+// TestCmdRetry_PreMRPause_ReturnsWorking is cmdResume's counterpart for
+// /syntropy retry: with no MR yet to comment on or re-trigger, "retry" is
+// only meaningful as "re-run work() for CurrentUnit" here.
+func TestCmdRetry_PreMRPause_ReturnsWorking(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		RunnerName:   "fake-runner",
+		Goal:         "test goal",
+		Author:       provider.User{Handle: "andreww"},
+		CurrentUnit:  "svc-x",
+		InFlight:     map[string]provider.MR{},
+	})
+	r.Status = StatusPaused
+	r.Object.PauseReason = `transient error working on unit "svc-x": git EnsureBranch: dial tcp: timeout`
+
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy retry", provider.MR{})))
+	if next != StatusWorking {
+		t.Errorf("want Working for a pre-MR pause, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("PauseReason should be cleared; got %q", r.Object.PauseReason)
+	}
+}
+
 func TestCmdSkip(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
