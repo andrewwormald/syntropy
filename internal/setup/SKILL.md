@@ -131,3 +131,35 @@ unless asked.
 
 Run `syntropy <command> -h` for full flag reference before constructing a
 command — flags evolve independently of this skill file.
+
+## Reporting a bug in syntropy itself
+
+File an issue only for a genuine defect in syntropy's own behavior — a
+crash, a wrong state transition, a misclassified event, the daemon doing
+something the docs/ADRs say it shouldn't. Not for problems with the user's
+own repo, CI, or business logic; those aren't syntropy bugs.
+
+```bash
+gh issue create --repo andrewwormald/syntropy --title "..." --body "..."
+```
+
+`andrewwormald/syntropy` is a public repo. The user's own repo, project
+structure, feature names, and spec content are never yours to share there —
+strip them before filing, every time:
+
+- **Include:** `syntropy version` output, OS/arch, provider *type* only
+  (`gitlab` or `github`, never the project path), the Run's `status` (goal
+  text generalized — "a bulk rename across ~12 units", not the literal
+  spec), the exact error/log line with any org/repo/project/file names
+  replaced by placeholders (`<org>/<repo>`, `<path>`), and steps to
+  reproduce described in terms of syntropy's own behavior (which command,
+  which state transition, what happened vs. what you expected).
+- **Never include:** the real org/repo/project name or URL, the literal
+  spec goal or body, real file paths or diffs from the swept repo, MR/PR
+  comment thread content, usernames/emails, or anything that reveals what
+  the user's codebase does or how it's structured. If a log line or error
+  message contains any of this, redact it before pasting — don't just
+  trim the obviously-identifying part and assume the rest is safe.
+
+If you're not sure whether something is safe to include, leave it out and
+describe the shape of the problem in the abstract instead.
