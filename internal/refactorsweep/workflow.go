@@ -96,12 +96,10 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusPaused,        // transient runner/git error pre-MR → pause + retry, not a permanent fail
 		StatusFailed,        // unrecoverable (bad config, or resume/abandon-driven abandonment)
 	).WithOptions(stepOpts...)
-	// StatusPaused is now a valid destination from Working: once work()'s
-	// body is updated (a later increment) to distinguish transient
-	// runner/git failures from unrecoverable config errors, it can return
-	// StatusPaused for the former without the graph rejecting the
-	// transition. Until that body change lands, work() still only ever
-	// returns StatusFailed on error.
+	// work() now returns StatusPaused (via pauseWork) for transient
+	// runner/git failures pre-MR, and StatusFailed only for unrecoverable
+	// config errors or a deliberate runner refusal (DecisionFail). See
+	// ADR-0097 and pauseWork's doc comment.
 
 	b.AddCallback(StatusAwaitingMerge, d.resume,
 		StatusAwaitingMerge,
@@ -657,9 +655,16 @@ func applyIncrementScope(req *runner.Request, s *AgentState, unitID string) {
 //   6. Provider: CreateMR; store in InFlight; post initial comment
 //   7. → StatusAwaitingMerge
 //
-// Any error before MR creation → StatusFailed. The Run terminates; the
-// user starts a new one. (A future ADR may add a pre-MR pause+retry path;
-// for v1 we keep work() linear.)
+// Errors split into two buckets (ADR-0097):
+//   - Unrecoverable config (unknown provider/runner, no Runners/Git
+//     configured, no CurrentUnit) or a deliberate runner refusal
+//     (DecisionFail) → StatusFailed. The Run terminates; the user starts
+//     a new one.
+//   - A transient runner or git failure (worktree setup, the claude exec
+//     itself, HasWorkBeyondBase/Commit/DiffShortstat/Push, the isolation
+//     check) → StatusPaused via pauseWork, so the Run can be retried
+//     instead of permanently failing on a blip. See pauseWork's doc for
+//     how a paused Run gets resumed with no MR yet to comment on.
 func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
 	if r.Object.CurrentUnit == "" {
 		return StatusFailed, fmt.Errorf("work: no CurrentUnit set")
@@ -686,8 +691,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 
 	// 1. Set up worktree off origin/<base>.
 	if err := d.Git.EnsureBranch(ctx, worktree, r.Object.BaseRepo, baseBranch, branch); err != nil {
-		r.Object.LastError = fmt.Sprintf("work: git EnsureBranch: %v", err)
-		return StatusFailed, nil
+		return d.pauseWork(r, unitID, fmt.Sprintf("git EnsureBranch: %v", err))
 	}
 
 	// 2. Invoke runner inside the worktree.
@@ -710,8 +714,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	}
 
 	if err := d.verifyIsolatedWorktree(ctx, worktree); err != nil {
-		r.Object.LastError = fmt.Sprintf("work: %v", err)
-		return StatusFailed, nil
+		return d.pauseWork(r, unitID, fmt.Sprintf("worktree isolation check: %v", err))
 	}
 
 	// Bounded retry loop: a turn whose response has no valid decision marker
@@ -747,8 +750,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 				req.ParseFailure = runErr.Error()
 				continue
 			}
-			r.Object.LastError = fmt.Sprintf("work: runner.Run: %v", runErr)
-			return StatusFailed, nil
+			return d.pauseWork(r, unitID, fmt.Sprintf("runner.Run: %v", runErr))
 		}
 		break
 	}
@@ -781,8 +783,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		// as "no changes" (see the Git interface doc for the four cases).
 		hasWork, err := d.Git.HasWorkBeyondBase(ctx, worktree, baseBranch)
 		if err != nil {
-			r.Object.LastError = fmt.Sprintf("work: git HasWorkBeyondBase: %v", err)
-			return StatusFailed, nil
+			return d.pauseWork(r, unitID, fmt.Sprintf("git HasWorkBeyondBase: %v", err))
 		}
 		if !hasWork {
 			// Runner claims Done but didn't touch anything. Treat as a
@@ -798,12 +799,11 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		}
 
 		// 4. Commit + push.
-		// StatusFailed must be terminal (see AgentStatus doc on
-		// StatusFailed: "unrecoverable; worktree kept for forensics").
-		// Returning (StatusFailed, err) makes the workflow library treat
-		// the err as transient and retry the step forever — that's how the
-		// spike on 2026-06-24 ended up looping every ~1s on a pre-commit
-		// hook failure. Capture err in LastError, then return nil so the
+		// Returning (StatusPaused/StatusFailed, err) makes the workflow
+		// library treat the err as transient and retry the step forever —
+		// that's how the spike on 2026-06-24 ended up looping every ~1s on
+		// a pre-commit hook failure. Capture the failure via pauseWork (or
+		// LastError for the unrecoverable branches), then return nil so the
 		// state actually commits.
 		// Keep the subject short — many shops cap commit message subjects
 		// at 72/80 chars via a commit-msg hook. The full Goal goes in the
@@ -812,8 +812,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			shortRunID(r.RunID), unitID, r.Object.Goal, shortRunID(r.RunID))
 		if err := d.Git.Commit(ctx, worktree, commitMsg); err != nil {
 			if !errors.Is(err, git.ErrNoChanges) {
-				r.Object.LastError = fmt.Sprintf("work: git Commit: %v", err)
-				return StatusFailed, nil
+				return d.pauseWork(r, unitID, fmt.Sprintf("git Commit: %v", err))
 			}
 			// ErrNoChanges: nothing stageable. Two ways here: the runner
 			// committed its own work (clean tree — the commits are what
@@ -824,8 +823,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			// terminate the Run.
 			stat, sErr := d.Git.DiffShortstat(ctx, worktree, baseBranch)
 			if sErr != nil {
-				r.Object.LastError = fmt.Sprintf("work: git DiffShortstat: %v", sErr)
-				return StatusFailed, nil
+				return d.pauseWork(r, unitID, fmt.Sprintf("git DiffShortstat: %v", sErr))
 			}
 			if stat == "" {
 				r.Object.Blacklisted = append(r.Object.Blacklisted, BlacklistedUnit{
@@ -840,8 +838,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			// Self-committed work: fall through to Push.
 		}
 		if err := d.Git.Push(ctx, worktree, branch); err != nil {
-			r.Object.LastError = fmt.Sprintf("work: git Push: %v", err)
-			return StatusFailed, nil
+			return d.pauseWork(r, unitID, fmt.Sprintf("git Push: %v", err))
 		}
 
 		// 5. Open the MR. Title: prefer the runner's suggestion, phrased per
@@ -928,6 +925,26 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			resp.Decision, unitID)
 		return StatusFailed, nil
 	}
+}
+
+// pauseWork parks a Run on a transient runner/git failure hit before an MR
+// exists for r.Object.CurrentUnit (ADR-0097), instead of work() failing the
+// Run permanently on what's usually a blip (a dropped git connection, a
+// crashed claude exec). unitID is CurrentUnit, still set on entry.
+//
+// Unlike every other pause site in this package, there is no in-flight MR
+// yet to post the pause reason to as a comment — postBotReply's IID=0 write
+// is a deliberate silent no-op here (see controlHandler's own comment on the
+// same case), not a bug. The human path is `syntropy resume <run-id>` or a
+// direct POST /control {"verb":"retry"}; either reaches cmdResume/cmdRetry
+// (controls.go), which route StatusPaused back to StatusWorking specifically
+// because CurrentUnit is still set with nothing in InFlight for it — see
+// their doc comments for why that combination means "pre-MR pause", not
+// "planner pause" (CurrentUnit empty) or "post-MR pause" (MR in InFlight).
+func (d *Deps) pauseWork(r *workflow.Run[AgentState, AgentStatus], unitID, opErr string) (AgentStatus, error) {
+	r.Object.LastError = fmt.Sprintf("work: %s", opErr)
+	r.Object.PauseReason = fmt.Sprintf("transient error working on unit %q: %s — run `syntropy resume <run-id>` to retry", unitID, opErr)
+	return StatusPaused, nil
 }
 
 // recentOutgoingHashCap bounds AgentState.RecentOutgoingHashes. See the

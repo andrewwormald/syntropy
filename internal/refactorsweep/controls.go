@@ -209,25 +209,36 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 }
 
 // cmdResume clears the paused state. Which status it hands back to has to
-// be honest about what's actually true: StatusAwaitingMerge claims an MR is
-// open and being watched, but a Run paused via discoverSpec's DecisionAsk
-// (askPausePrefix, ADR-0094) parked *before* any unit's MR existed —
-// markUnitMerged/markUnitBlacklisted always empty InFlight before handing
-// off to StatusDiscovering, so InFlight is empty at that point and stays
-// that way until the next unit starts. Unconditionally returning
-// StatusAwaitingMerge there would claim a webhook-watched MR that doesn't
-// exist; StatusDiscovering (a valid Paused-callback destination, see
-// workflow.go's Build) is the honest one — it re-invokes the planner with
-// the author's answer now in context. Every other pause has at least one
-// in-flight unit, so StatusAwaitingMerge is correct there.
+// be honest about what's actually true:
+//
+//   - CurrentUnit set and InFlight empty means work() paused pre-MR (a
+//     transient runner/git error — ADR-0097). There's no MR yet to watch,
+//     and re-running the planner would abandon CurrentUnit for nothing;
+//     StatusWorking retries work() for it directly.
+//   - CurrentUnit empty and InFlight empty is discoverSpec's DecisionAsk
+//     pause (askPausePrefix, ADR-0094), parked *before* any unit's MR
+//     existed — markUnitMerged/markUnitBlacklisted always empty InFlight
+//     before handing off to StatusDiscovering. StatusDiscovering (a valid
+//     Paused-callback destination, see workflow.go's Build) is the honest
+//     one — it re-invokes the planner with the author's answer now in
+//     context.
+//   - Otherwise there's at least one in-flight unit, so StatusAwaitingMerge
+//     (claiming a webhook-watched MR exists) is correct.
 func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	next := StatusAwaitingMerge
-	msg := fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle)
-	if len(r.Object.InFlight) == 0 {
+	var next AgentStatus
+	var msg string
+	switch {
+	case len(r.Object.InFlight) == 0 && r.Object.CurrentUnit != "":
+		next = StatusWorking
+		msg = fmt.Sprintf("▶️ Resumed per @%s. Retrying work on `%s`.", ev.Author.Handle, r.Object.CurrentUnit)
+	case len(r.Object.InFlight) == 0:
 		next = StatusDiscovering
 		msg = fmt.Sprintf("▶️ Resumed per @%s. Re-running discovery with your answer.", ev.Author.Handle)
+	default:
+		next = StatusAwaitingMerge
+		msg = fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle)
 	}
 	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, msg)
 	return next, nil
@@ -256,13 +267,23 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	return next, nil
 }
 
-// cmdRetry clears PauseReason and unparks the Run. The author is responsible
-// for re-triggering by event (re-comment, wait for CI rerun, etc.) — v1
-// does not replay the last unsuccessful operation. Document this in the
-// acknowledgement comment so the author knows what to do next.
+// cmdRetry clears PauseReason and unparks the Run. For a post-MR pause the
+// author is responsible for re-triggering by event (re-comment, wait for CI
+// to rerun, etc.) — v1 does not replay the last unsuccessful operation there.
+//
+// A pre-MR pause (CurrentUnit set, InFlight empty for it — work()'s
+// pauseWork, ADR-0097) is different: there's no MR event to wait for, so
+// this is the only "retry" available. Route straight back to StatusWorking
+// to actually re-run work() for CurrentUnit, mirroring cmdResume's same
+// distinction.
 func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
+	if len(r.Object.InFlight) == 0 && r.Object.CurrentUnit != "" {
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
+			fmt.Sprintf("🔄 Cleared pause per @%s. Retrying work on `%s`.", ev.Author.Handle, r.Object.CurrentUnit))
+		return StatusWorking, nil
+	}
 	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("🔄 Cleared pause per @%s. Re-comment your last review feedback or wait for CI to rerun to retry the underlying operation.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil

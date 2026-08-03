@@ -1132,13 +1132,18 @@ func TestWork_RunnerFails(t *testing.T) {
 
 	next, err := d.work(t.Context(), r)
 	if err != nil {
-		t.Fatalf("work: want nil err (terminal failure committed via state, not retried), got %v", err)
+		t.Fatalf("work: want nil err (paused via state, not retried by the library), got %v", err)
 	}
-	if next != StatusFailed {
-		t.Errorf("want Failed, got %v", next)
+	// ADR-0097: a runner.Run failure is a transient exec crash, not
+	// unrecoverable config — work() pauses (pauseWork) rather than failing.
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
 	}
 	if !strings.Contains(r.Object.LastError, "rate limited") {
 		t.Errorf("LastError should propagate runner error: %q", r.Object.LastError)
+	}
+	if !strings.Contains(r.Object.PauseReason, "rate limited") {
+		t.Errorf("PauseReason should propagate runner error: %q", r.Object.PauseReason)
 	}
 	if len(fp.createMRCalls) != 0 {
 		t.Errorf("CreateMR should not be called when runner errors; got %d calls", len(fp.createMRCalls))
@@ -1205,8 +1210,10 @@ func TestWork_ParseFailure_ExceedsCap_Fails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("work: %v", err)
 	}
-	if next != StatusFailed {
-		t.Errorf("parse failure persisting past maxParseRetries should fail, got %v", next)
+	// ADR-0097: exhausting the parse-retry cap is still a runner.Run-shaped
+	// transient failure — pause + retry, not a permanent fail.
+	if next != StatusPaused {
+		t.Errorf("parse failure persisting past maxParseRetries should pause, got %v", next)
 	}
 	if !strings.Contains(r.Object.LastError, "no <syntropy-decision> marker") {
 		t.Errorf("LastError should propagate the parse error: %q", r.Object.LastError)
@@ -1736,16 +1743,20 @@ func TestWork_PushFails(t *testing.T) {
 
 	next, err := d.work(t.Context(), r)
 	if err != nil {
-		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
+		t.Fatalf("work: want nil err (paused via state), got %v", err)
 	}
-	if next != StatusFailed {
-		t.Errorf("want Failed on push fail, got %v", next)
+	// ADR-0097: a git push failure pre-MR is transient — pause + retry.
+	if next != StatusPaused {
+		t.Errorf("want Paused on push fail, got %v", next)
 	}
 	if len(fp.createMRCalls) != 0 {
 		t.Errorf("no MR should be opened when push failed; got %d", len(fp.createMRCalls))
 	}
 	if !strings.Contains(r.Object.LastError, "branch protection") {
 		t.Errorf("LastError should propagate push error: %q", r.Object.LastError)
+	}
+	if !strings.Contains(r.Object.PauseReason, "branch protection") {
+		t.Errorf("PauseReason should propagate push error: %q", r.Object.PauseReason)
 	}
 }
 
@@ -1760,13 +1771,18 @@ func TestWork_EnsureBranchFails(t *testing.T) {
 
 	next, err := d.work(t.Context(), r)
 	if err != nil {
-		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
+		t.Fatalf("work: want nil err (paused via state), got %v", err)
 	}
-	if next != StatusFailed {
-		t.Errorf("want Failed, got %v", next)
+	// ADR-0097: EnsureBranch failing pre-MR is a transient git error — pause
+	// + retry, not a permanent fail.
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
 	}
 	if !strings.Contains(r.Object.LastError, "release/v9") {
 		t.Errorf("LastError should propagate EnsureBranch error: %q", r.Object.LastError)
+	}
+	if !strings.Contains(r.Object.PauseReason, "release/v9") {
+		t.Errorf("PauseReason should propagate EnsureBranch error: %q", r.Object.PauseReason)
 	}
 	if len(fr.calls) != 0 {
 		t.Errorf("runner should NOT be invoked when worktree setup fails; got %d calls", len(fr.calls))
@@ -1784,13 +1800,19 @@ func TestWork_NotIsolatedWorktree_RefusesToInvokeRunner(t *testing.T) {
 
 	next, err := d.work(t.Context(), r)
 	if err != nil {
-		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
+		t.Fatalf("work: want nil err (paused via state), got %v", err)
 	}
-	if next != StatusFailed {
-		t.Errorf("want Failed, got %v", next)
+	// ADR-0097: the isolation check failing pre-MR is treated the same as
+	// the mid-flight isolation-check pause (see resume()'s handling of the
+	// same check) — pause + retry, not a permanent fail.
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
 	}
 	if !strings.Contains(r.Object.LastError, "not an isolated git worktree") {
 		t.Errorf("LastError should mention isolation guard: %q", r.Object.LastError)
+	}
+	if !strings.Contains(r.Object.PauseReason, "not an isolated git worktree") {
+		t.Errorf("PauseReason should mention isolation guard: %q", r.Object.PauseReason)
 	}
 	if len(fr.calls) != 0 {
 		t.Errorf("runner should NOT be invoked with --dangerously-skip-permissions on a non-isolated dir; got %d calls", len(fr.calls))
