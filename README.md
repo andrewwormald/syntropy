@@ -98,7 +98,9 @@ Syntropy works *with* your existing tools, not instead of them. It's worth being
 
 | Category | Examples | Relationship to syntropy |
 |---|---|---|
-| **PR/MR review bots** | [Hermes Agent](https://hermes-agent.nousresearch.com/), CodeRabbit, Greptile | Analyze PRs that already exist and post findings. Complementary — one of these can review every MR syntropy opens. |
+| **Interactive coding assistants (session-driven)** | Claude Code and similar terminal coding assistants | Not a competitor — a substrate. Syntropy's pluggable `Runner` interface shells out to `claude -p` today. These need a human actively driving the session in real time; syntropy is what keeps working after you close the laptop. |
+| **PR/MR review bots (single-purpose)** | CodeRabbit, Greptile | Analyze PRs that already exist and post findings. Complementary — one of these can review every MR syntropy opens. |
+| **General-purpose always-on agent frameworks** | [Hermes Agent](https://hermes-agent.nousresearch.com/), OpenClaw, IronClaw | Persistent, multi-channel (Telegram/Slack/Discord/etc.) personal or team agents with cross-session memory. Hermes's GitHub PR-review capability is a *skill* bolted onto this kind of framework, not a native lifecycle feature — none of these decompose or pace a sweep. |
 | **Async issue-to-PR agents** | GitHub Copilot coding agent, Google Jules, Sweep.dev | Take one issue, return one PR, autonomously. Great for a discrete task; not built to decompose one large sweep into an ordered, human-paced chain. |
 | **Deterministic bulk-codemod tools** | OpenRewrite, Sourcegraph Batch Changes | Run fixed recipes/AST transforms across many repos, opening tracked PRs. The closest *mechanical* analog — but no reasoning for judgment calls, addressing review feedback, or diagnosing a novel CI failure. Complementary for the purely mechanical portion of a sweep. |
 | **AI-driven PR stacking** | Devin's Stacked PRs (Cognition Labs) | Decomposes one task into a stack of smaller, reviewable PRs — the closest AI competitor. Closed, hosted platform; the stack's layers exist together, reviewed in parallel. |
