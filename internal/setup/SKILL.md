@@ -32,12 +32,7 @@ directly.
 
 ## Basic flow
 
-1. **Write a spec.** A markdown file with YAML frontmatter (`goal`,
-   `provider`, `project`, `base_branch`, `base_repo`, `concurrency`,
-   `draft_mrs`, `status`) plus a markdown body expanding the goal — see
-   the README's Quick Start section in the syntropy repo for a full
-   example, or ask the user for the details you need.
-2. **Run `syntropy config check --repo <base_repo>` before triggering
+1. **Run `syntropy config check --repo <base_repo>` before writing
    anything — a pure, cheap, no-tokens code check, not something to
    reason about yourself.** `syntropy setup` writes `.syntropy.yml` to
    whatever directory it's run *from* (`$(pwd)`, not the spec's
@@ -75,19 +70,24 @@ directly.
    turn (and its tokens) only on fields that are *actually* missing —
    never re-ask about something `config check` already reports as
    configured, and never read the YAML yourself to double-check its
-   answer.
+   answer, and never do the work of writing a spec only to discover
+   afterward that you needed to pause for a missing field.
 
    Without this, MRs/PRs default to a generic `<goal>: <unit-id>` title —
    which can badly violate a repo's real conventions (e.g. an 80-char CI
    title-length check) and isn't obvious until CI already failed on it.
+2. **Write a spec.** A markdown file with YAML frontmatter (`goal`,
+   `provider`, `project`, `base_branch`, `base_repo`, `concurrency`,
+   `draft_mrs`, `status`) plus a markdown body expanding the goal — see
+   the README's Quick Start section in the syntropy repo for a full
+   example, or ask the user for the details you need.
 3. **Render the spec for review before triggering it — every time you
    write a new one.** A spec is a real decision (scope, constraints, what
    gets built) made on the user's behalf; it shouldn't sit invisibly on
-   disk until it's already running. Once the spec file is written and
-   `config check` (if needed) has passed, present the spec's actual
-   content — goal, provider/project, full body — in whatever durable,
-   shareable, reviewable form your own environment supports, before
-   calling `syntropy start`:
+   disk until it's already running. Once the spec file is written,
+   present its actual content — goal, provider/project, full body — in
+   whatever durable, shareable, reviewable form your own environment
+   supports, before calling `syntropy start`:
    - If you have an artifact/canvas/preview capability (e.g. Claude
      Code's Artifact tool), use it — render the spec as a clean document
      the user can actually read, not a wall of raw markdown in the
