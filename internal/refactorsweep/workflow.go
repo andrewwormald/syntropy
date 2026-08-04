@@ -836,7 +836,13 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 					continue
 				}
 				if hookErr != nil {
-					return d.pauseWork(r, unitID, fmt.Sprintf("commit rejected by pre-commit hook %d times in a row: %s", hookRetries, hookErr.Output))
+					// Stash the hook's own complaint in PromptInjection so a
+					// human's /syntropy retry after this pause carries it
+					// forward into the next runner turn (line 722) instead of
+					// silently dropping it and risking the same rejection
+					// repeating.
+					r.Object.PromptInjection = hookErr.Output
+					return d.pauseWork(r, unitID, fmt.Sprintf("the pre-commit hook keeps rejecting the commit after %d retries in a row:\n```\n%s\n```", hookRetries, hookErr.Output))
 				}
 				if !errors.Is(err, git.ErrNoChanges) {
 					return d.pauseWork(r, unitID, fmt.Sprintf("git Commit: %v", err))
