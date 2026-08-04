@@ -573,6 +573,11 @@ func buildPlanningPrompt(s *AgentState) string {
 
 Decide the next increment toward implementing this spec.
 
+Do not propose an increment that duplicates a blacklisted unit above unless
+its Reason no longer applies (e.g. it was blacklisted for a cause that's
+since been fixed) — an explicit human rejection must not be silently
+re-proposed as a "new" increment.
+
 Return Decision=Continue with a one-line rationale (Summary) describing the
 next increment, OR Decision=Done if the spec is fully implemented, OR
 Decision=Ask with a Question if you need the author's input before deciding,
