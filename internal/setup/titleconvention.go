@@ -42,6 +42,16 @@ type RepoConfig struct {
 	// treat it as a convention to inject anywhere (see
 	// EffectiveTitleConvention).
 	TitleConvention string `yaml:"title_convention"`
+
+	// SpecTool is a per-repo override of the global default spec tool
+	// (config.Config.SpecTool, ADR-0051/increment-1) an agent should route
+	// spec creation/viewing to for this repo specifically, e.g. "spec-kit".
+	// Unlike TitleConvention, this is a pure optional override, not a
+	// field every repo is expected to have an opinion on — it's never
+	// included in MissingFields, so an agent following the syntropy Skill
+	// never prompts for it as part of the per-repo setup conversation; a
+	// repo with no override simply falls back to the global default.
+	SpecTool string `yaml:"spec_tool,omitempty"`
 }
 
 // BlankSentinel is written to a RepoConfig field, instead of leaving it
@@ -84,8 +94,11 @@ func (c RepoConfig) IsConfigured() bool {
 // this so an agent can gate a conversational ask on its output instead of
 // reading and reasoning about the YAML file itself every time.
 //
-// Add a case here for every new field RepoConfig grows — this is the one
-// place the "which fields exist" list needs to stay current.
+// Add a case here for every new field RepoConfig grows that an agent
+// should proactively ask about — this is the one place the "which fields
+// exist" list needs to stay current. SpecTool is deliberately excluded:
+// it's an optional per-repo override with a global fallback, not
+// something every repo needs a decided answer for.
 func MissingFields(cfg RepoConfig) []string {
 	var missing []string
 	if !cfg.IsConfigured() {
@@ -122,12 +135,12 @@ func ResolveTitleConvention(flagConvention string, interactive bool, prompt func
 }
 
 // WriteRepoConfig writes `.syntropy.yml` into repoDir with the given title
-// convention. It's a no-op (returns false, nil) when convention is empty —
-// there's nothing to persist — or when the file already exists and force
-// is false, so a user's local edits to it are never clobbered by a later
-// `syntropy setup` run.
-func WriteRepoConfig(repoDir, convention string, force bool) (bool, error) {
-	if convention == "" {
+// convention and spec tool override. It's a no-op (returns false, nil) when
+// both convention and specTool are empty — there's nothing to persist — or
+// when the file already exists and force is false, so a user's local edits
+// to it are never clobbered by a later `syntropy setup` run.
+func WriteRepoConfig(repoDir, convention, specTool string, force bool) (bool, error) {
+	if convention == "" && specTool == "" {
 		return false, nil
 	}
 	path := RepoConfigPath(repoDir)
@@ -138,7 +151,7 @@ func WriteRepoConfig(repoDir, convention string, force bool) (bool, error) {
 			return false, err
 		}
 	}
-	data, err := yaml.Marshal(RepoConfig{TitleConvention: convention})
+	data, err := yaml.Marshal(RepoConfig{TitleConvention: convention, SpecTool: specTool})
 	if err != nil {
 		return false, fmt.Errorf("marshal repo config: %w", err)
 	}
@@ -146,4 +159,27 @@ func WriteRepoConfig(repoDir, convention string, force bool) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return true, nil
+}
+
+// ResolveRepoSpecTool picks the per-repo spec tool override `syntropy
+// setup` should write to `.syntropy.yml`. Precedence: --repo-spec-tool
+// flag, then (if interactive) the prompt's answer, then empty — a
+// non-interactive run with no flag makes no claim about an override
+// rather than guessing one, leaving the repo to fall back to the global
+// default spec tool. Mirrors ResolveTitleConvention's persistence path.
+//
+// prompt is called only when flagSpecTool is empty and interactive is
+// true; it returns the raw line the user typed, or an error reading stdin.
+func ResolveRepoSpecTool(flagSpecTool string, interactive bool, prompt func() (string, error)) (string, error) {
+	if flagSpecTool != "" {
+		return flagSpecTool, nil
+	}
+	if !interactive {
+		return "", nil
+	}
+	answer, err := prompt()
+	if err != nil {
+		return "", fmt.Errorf("read repo spec tool: %w", err)
+	}
+	return answer, nil
 }
