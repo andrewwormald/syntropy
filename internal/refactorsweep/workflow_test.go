@@ -1223,6 +1223,90 @@ func TestWork_ParseFailure_ExceedsCap_Fails(t *testing.T) {
 	}
 }
 
+// ADR-0075/ADR-0076: a commit rejected by the target repo's own pre-commit
+// hook must not pause work() immediately — the rejection is fed back to the
+// runner as Request.HookFailure and the turn is retried in-turn, mirroring
+// invokeForEvent's identical loop. Here the retry succeeds, so the unit
+// should ship (commit + push + MR) with no pause.
+func TestWork_HookRejection_RetriesThenSucceeds(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Reformatted the file."}})
+	g := d.withGit(&fakeGit{
+		commitErrSeq: []error{
+			&git.HookRejectionError{Output: "gofmt: file is not formatted (payments.go)"},
+			nil,
+		},
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("hook rejection cleared by retry should ship normally, got %v", next)
+	}
+	if r.Object.LastError != "" {
+		t.Errorf("LastError should be empty once the retry succeeds; got %q", r.Object.LastError)
+	}
+	if len(fr.calls) != 2 {
+		t.Fatalf("want 2 runner invocations (initial + one retry), got %d", len(fr.calls))
+	}
+	if fr.calls[0].HookFailure != "" {
+		t.Errorf("first call should carry no HookFailure, got %q", fr.calls[0].HookFailure)
+	}
+	if want := "gofmt: file is not formatted (payments.go)"; fr.calls[1].HookFailure != want {
+		t.Errorf("retry call HookFailure = %q, want %q", fr.calls[1].HookFailure, want)
+	}
+	if len(g.commits) != 2 {
+		t.Errorf("want 2 Commit attempts, got %d", len(g.commits))
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("want the successful retry pushed, got %d pushes", len(g.pushes))
+	}
+	if len(fp.createMRCalls) != 1 {
+		t.Errorf("an MR should be opened once the retry succeeds; got %d", len(fp.createMRCalls))
+	}
+	if len(r.Object.History) != 2 {
+		t.Errorf("both turns should be recorded in History, got %d", len(r.Object.History))
+	}
+}
+
+// ADR-0075/ADR-0076: a hook rejection that keeps recurring past
+// maxHookRetries must fall back to work()'s existing pause behaviour rather
+// than retrying forever.
+func TestWork_HookRejection_ExceedsCap_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Tried to fix it."}})
+	hookErr := &git.HookRejectionError{Output: "secret scan: found an AWS key in config.go"}
+	d.withGit(&fakeGit{
+		commitErrSeq: []error{hookErr, hookErr, hookErr},
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("hook rejection persisting past maxHookRetries should pause, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "pre-commit hook") {
+		t.Errorf("LastError should mention the pre-commit hook; got %q", r.Object.LastError)
+	}
+	if want := maxHookRetries + 1; len(fr.calls) != want {
+		t.Errorf("want %d runner invocations (initial + %d retries), got %d", want, maxHookRetries, len(fr.calls))
+	}
+}
+
 func TestWork_RunnerDeclines(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
