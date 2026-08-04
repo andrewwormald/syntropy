@@ -78,3 +78,56 @@ func TestResolveModel_InteractiveBlankAnswerKeepsExisting(t *testing.T) {
 		t.Fatalf("got %q, want existing value preserved on blank answer", got)
 	}
 }
+
+func TestResolveSpecTool_FlagWins(t *testing.T) {
+	got, err := ResolveSpecTool("spec-kit", "old-default", true, func(string) (string, error) {
+		t.Fatal("prompt should not be called when --spec-tool is set")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "spec-kit" {
+		t.Fatalf("got %q, want flag value", got)
+	}
+}
+
+func TestResolveSpecTool_NonInteractiveKeepsExisting(t *testing.T) {
+	got, err := ResolveSpecTool("", "old-default", false, func(string) (string, error) {
+		t.Fatal("prompt should not be called when not interactive")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "old-default" {
+		t.Fatalf("got %q, want existing value preserved", got)
+	}
+}
+
+func TestResolveSpecTool_InteractivePromptAnswerWins(t *testing.T) {
+	got, err := ResolveSpecTool("", "old-default", true, func(existing string) (string, error) {
+		if existing != "old-default" {
+			t.Fatalf("prompt got existing=%q, want %q", existing, "old-default")
+		}
+		return "spec-kit", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "spec-kit" {
+		t.Fatalf("got %q, want %q", got, "spec-kit")
+	}
+}
+
+func TestResolveSpecTool_InteractiveBlankAnswerKeepsExisting(t *testing.T) {
+	got, err := ResolveSpecTool("", "old-default", true, func(string) (string, error) {
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "old-default" {
+		t.Fatalf("got %q, want existing value preserved on blank answer", got)
+	}
+}

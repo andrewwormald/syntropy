@@ -2,7 +2,8 @@
 // ~/.syntropy/config.yaml. It's the persisted counterpart to the
 // interactive choices `syntropy setup` walks a user through (ADR-0051):
 // which runner and model to use by default when a spec doesn't pin its
-// own.
+// own, and which spec tool an agent should route spec creation/viewing
+// to.
 package config
 
 import (
@@ -21,6 +22,11 @@ type Config struct {
 	// Model is the default model override passed to the runner, e.g.
 	// "claude-sonnet-5". Empty means the runner's own default.
 	Model string `yaml:"model"`
+	// SpecTool is the default spec tool an agent should route spec
+	// creation/viewing to, e.g. "spec-kit". Empty means no default has
+	// been set yet, and an agent should fall back to syntropy's own
+	// default spec flow.
+	SpecTool string `yaml:"spec_tool"`
 }
 
 // Path returns the config file location under the given home directory.

@@ -479,6 +479,9 @@ func TestCmdSetup_NonInteractiveDefaultsToClaudeNoModel(t *testing.T) {
 	if cfg.Model != "" {
 		t.Fatalf("got model %q, want empty (no TTY, no --model)", cfg.Model)
 	}
+	if cfg.SpecTool != "" {
+		t.Fatalf("got spec tool %q, want empty (no TTY, no --spec-tool)", cfg.SpecTool)
+	}
 }
 
 // TestCmdSetup_ModelFlagPersists asserts --model is persisted verbatim.
@@ -519,6 +522,48 @@ func TestCmdSetup_RerunWithoutModelFlagKeepsExisting(t *testing.T) {
 	}
 	if cfg.Model != "claude-sonnet-5" {
 		t.Fatalf("got model %q, want previously persisted value kept", cfg.Model)
+	}
+}
+
+// TestCmdSetup_SpecToolFlagPersists asserts --spec-tool is persisted
+// verbatim.
+func TestCmdSetup_SpecToolFlagPersists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup([]string{"--spec-tool", "spec-kit"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.SpecTool != "spec-kit" {
+		t.Fatalf("got spec tool %q, want %q", cfg.SpecTool, "spec-kit")
+	}
+}
+
+// TestCmdSetup_RerunWithoutSpecToolFlagKeepsExisting asserts that
+// re-running setup non-interactively without --spec-tool doesn't clobber a
+// previously persisted spec tool back to empty.
+func TestCmdSetup_RerunWithoutSpecToolFlagKeepsExisting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup([]string{"--spec-tool", "spec-kit"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+	if err := cmdSetup(nil); err != nil {
+		t.Fatalf("cmdSetup (rerun): %v", err)
+	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.SpecTool != "spec-kit" {
+		t.Fatalf("got spec tool %q, want previously persisted value kept", cfg.SpecTool)
 	}
 }
 

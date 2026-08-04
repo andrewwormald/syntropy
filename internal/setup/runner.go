@@ -49,3 +49,31 @@ func ResolveModel(flagModel, existing string, interactive bool, prompt func(exis
 	}
 	return answer, nil
 }
+
+// ResolveSpecTool picks the default spec tool `everflow setup` should
+// persist. Precedence: --spec-tool flag, then (if interactive) the
+// prompt's answer, then the existing persisted value — so a
+// non-interactive re-run (no TTY, no flag; e.g. from a script or cron)
+// leaves a previously configured spec tool untouched rather than
+// clobbering it back to empty.
+//
+// prompt is called only when flagSpecTool is empty and interactive is
+// true; it receives the existing value to show as the default and
+// returns the raw (untrimmed-by-caller) line the user typed, or an
+// error reading stdin.
+func ResolveSpecTool(flagSpecTool, existing string, interactive bool, prompt func(existing string) (string, error)) (string, error) {
+	if flagSpecTool != "" {
+		return flagSpecTool, nil
+	}
+	if !interactive {
+		return existing, nil
+	}
+	answer, err := prompt(existing)
+	if err != nil {
+		return "", fmt.Errorf("read spec tool: %w", err)
+	}
+	if answer == "" {
+		return existing, nil
+	}
+	return answer, nil
+}

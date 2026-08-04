@@ -66,7 +66,7 @@ var commands = map[string]command{
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
-	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model (see ADR-0002, ADR-0051)", run: cmdSetup},
+	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model/spec-tool (see ADR-0002, ADR-0051)", run: cmdSetup},
 	"config":  {usage: "check a repo's .syntropy.yml for missing fields (see ADR-0083)", run: cmdConfig},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
@@ -1798,7 +1798,8 @@ func cmdConfig(args []string) error {
 }
 
 // cmdSetup installs the Claude Code Skill bundle (ADR-0002) and persists the
-// user's default runner + model choice to ~/.syntropy/config.yaml (ADR-0051).
+// user's default runner + model + spec tool choice to
+// ~/.syntropy/config.yaml (ADR-0051).
 // Unlike the automatic first-run hook in main(), this doesn't require
 // ~/.claude to already exist, and --force lets a user pull down the current
 // SKILL.md over a locally-edited copy.
@@ -1811,6 +1812,7 @@ func cmdSetup(args []string) error {
 	force := fs.Bool("force", false, "overwrite an existing Skill file or .syntropy.yml with the current/given value")
 	runnerFlag := fs.String("runner", "", "default runner to persist (default: the only registered runner, \"claude\")")
 	modelFlag := fs.String("model", "", "default model override to persist for the chosen runner (default: prompt if interactive, else leave unset)")
+	specToolFlag := fs.String("spec-tool", "", "default spec tool to persist, e.g. \"spec-kit\" (default: prompt if interactive, else leave unset)")
 	titleConventionFlag := fs.String("title-convention", "", "this repo's PR/MR title convention, written to .syntropy.yml (default: prompt if interactive, else leave unset)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1848,8 +1850,14 @@ func cmdSetup(args []string) error {
 		return fmt.Errorf("resolve model: %w", err)
 	}
 
+	specTool, err := setup.ResolveSpecTool(*specToolFlag, cfg.SpecTool, interactive, promptForSpecTool(os.Stdin, os.Stdout))
+	if err != nil {
+		return fmt.Errorf("resolve spec tool: %w", err)
+	}
+
 	cfg.Runner = runnerName
 	cfg.Model = model
+	cfg.SpecTool = specTool
 	if err := config.Save(home, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -1859,6 +1867,11 @@ func cmdSetup(args []string) error {
 		fmt.Printf("Default model: %s\n", model)
 	} else {
 		fmt.Printf("Default model: (none set — %s's own default; pass --model or rerun interactively to set one)\n", runnerName)
+	}
+	if specTool != "" {
+		fmt.Printf("Default spec tool: %s\n", specTool)
+	} else {
+		fmt.Printf("Default spec tool: (none set — syntropy's own default spec flow; pass --spec-tool or rerun interactively to set one)\n")
 	}
 	fmt.Printf("Saved to %s\n", config.Path(home))
 
@@ -1909,6 +1922,28 @@ func promptForModel(runnerName string, r io.Reader, w io.Writer) func(existing s
 			fmt.Fprintf(w, "Default model for %s (blank keeps %q): ", runnerName, existing)
 		} else {
 			fmt.Fprintf(w, "Default model for %s (blank = %s's own default): ", runnerName, runnerName)
+		}
+		scanner := bufio.NewScanner(r)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		return strings.TrimSpace(scanner.Text()), nil
+	}
+}
+
+// promptForSpecTool returns a setup.ResolveSpecTool prompt func that asks
+// the user for a default spec tool on r, showing existing as the value a
+// blank answer keeps. Only called when stdin is a TTY and no --spec-tool
+// flag was given.
+func promptForSpecTool(r io.Reader, w io.Writer) func(existing string) (string, error) {
+	return func(existing string) (string, error) {
+		if existing != "" {
+			fmt.Fprintf(w, "Default spec tool (blank keeps %q): ", existing)
+		} else {
+			fmt.Fprint(w, "Default spec tool, e.g. spec-kit (blank = syntropy's own default): ")
 		}
 		scanner := bufio.NewScanner(r)
 		if !scanner.Scan() {
