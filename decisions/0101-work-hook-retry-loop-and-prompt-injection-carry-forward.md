@@ -1,4 +1,4 @@
-# ADR-0100: `work()`'s pre-MR commit step gets its own hook-retry loop, and a fallback pause carries the rejection into `PromptInjection`
+# ADR-0101: `work()`'s pre-MR commit step gets its own hook-retry loop, and a fallback pause carries the rejection into `PromptInjection`
 
 **Status**: Accepted
 **Date**: 2026-08-04

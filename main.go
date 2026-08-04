@@ -1734,11 +1734,37 @@ func cmdPhrases(args []string) error {
 // human/agent-readable summary cmdConfig prints to stdout, but returning
 // the missing-field list instead of calling os.Exit — split out so tests
 // can assert its output/return value in-process. See ADR-0083.
+//
+// It also prints the effective spec tool (ADR-0099's deferred
+// consumption piece): repoDir's override if set, else the global default
+// from ~/.syntropy/config.yaml, else syntropy's own default flow — so an
+// agent following the syntropy Skill can read which spec tool to route
+// to off this command's output instead of resolving RepoConfig and
+// config.Config itself.
 func checkRepoConfig(repoDir string, w io.Writer) ([]string, error) {
 	cfg, err := setup.ReadRepoConfig(repoDir)
 	if err != nil {
 		return nil, fmt.Errorf("read repo config: %w", err)
 	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("home dir: %w", err)
+	}
+	globalCfg, err := config.Load(home)
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
+	effectiveSpecTool := cfg.EffectiveSpecTool(globalCfg.SpecTool)
+	switch {
+	case cfg.SpecTool != "":
+		fmt.Fprintf(w, "Spec tool: %s (repo override)\n", effectiveSpecTool)
+	case globalCfg.SpecTool != "":
+		fmt.Fprintf(w, "Spec tool: %s (global default)\n", effectiveSpecTool)
+	default:
+		fmt.Fprintln(w, "Spec tool: (none set — syntropy's own default spec flow)")
+	}
+
 	missing := setup.MissingFields(cfg)
 	if len(missing) == 0 {
 		fmt.Fprintf(w, "OK: %s has every recognised field configured\n", setup.RepoConfigPath(repoDir))

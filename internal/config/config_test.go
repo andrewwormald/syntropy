@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoad_MissingFile(t *testing.T) {
@@ -32,6 +33,26 @@ func TestSaveThenLoad_RoundTrips(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".syntropy", "config.yaml")); err != nil {
 		t.Fatalf("config file not written: %v", err)
+	}
+}
+
+func TestSaveThenLoad_UpdateCheckFields_RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	checkedAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	want := Config{UpdateCheckedAt: checkedAt, UpdateLatestVersion: "v0.4.0"}
+
+	if err := Save(home, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.UpdateCheckedAt.Equal(want.UpdateCheckedAt) {
+		t.Fatalf("got UpdateCheckedAt %v, want %v", got.UpdateCheckedAt, want.UpdateCheckedAt)
+	}
+	if got.UpdateLatestVersion != want.UpdateLatestVersion {
+		t.Fatalf("got UpdateLatestVersion %q, want %q", got.UpdateLatestVersion, want.UpdateLatestVersion)
 	}
 }
 
