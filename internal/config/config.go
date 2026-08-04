@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,6 +28,13 @@ type Config struct {
 	// been set yet, and an agent should fall back to syntropy's own
 	// default spec flow.
 	SpecTool string `yaml:"spec_tool"`
+	// UpdateCheckedAt is when syntropy last checked GitHub for a newer
+	// release. Zero means no check has ever run.
+	UpdateCheckedAt time.Time `yaml:"update_checked_at"`
+	// UpdateLatestVersion is the latest release version known as of
+	// UpdateCheckedAt, e.g. "v0.4.0". Empty means no newer release was
+	// found (or no check has ever run).
+	UpdateLatestVersion string `yaml:"update_latest_version"`
 }
 
 // Path returns the config file location under the given home directory.
