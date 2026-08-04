@@ -145,3 +145,4 @@ forces or unlocks.
 | 0095 | The Paused gate lets `askPausePrefix` resume, forces every other pause to stay put | Accepted | 2026-07-31 |
 | 0096 | Re-verify `EventMRClosed` before blacklisting, fall back to the webhook on re-verify failure | Accepted | 2026-07-31 |
 | 0097 | `work()` pauses (not fails) on a transient runner/git error pre-MR, resumes into `StatusWorking` | Accepted | 2026-08-03 |
+| 0098 | Planning prompt explicitly instructs against re-proposing blacklisted units | Accepted | 2026-08-04 |

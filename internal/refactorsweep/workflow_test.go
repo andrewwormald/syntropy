@@ -1466,6 +1466,23 @@ func TestBuildPlanningPrompt_SurfacesBlacklistReason(t *testing.T) {
 	}
 }
 
+// TestBuildPlanningPrompt_InstructsAgainstReproposingBlacklisted asserts
+// that the "Your task" section explicitly tells the planner not to
+// duplicate a blacklisted unit. Surfacing the Reason (see
+// TestBuildPlanningPrompt_SurfacesBlacklistReason) gives the planner the
+// signal, but without an explicit instruction there's nothing stopping it
+// from silently re-proposing the same rejected unit as a "new" increment.
+func TestBuildPlanningPrompt_InstructsAgainstReproposingBlacklisted(t *testing.T) {
+	s := &AgentState{Goal: "Multi-item spec"}
+
+	prompt := buildPlanningPrompt(s)
+
+	want := "Do not propose an increment that duplicates a blacklisted unit"
+	if !strings.Contains(prompt, want) {
+		t.Errorf("planning prompt missing anti-duplication instruction; want to contain %q, got:\n%s", want, prompt)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the
