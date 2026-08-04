@@ -1307,6 +1307,64 @@ func TestWork_HookRejection_ExceedsCap_Pauses(t *testing.T) {
 	}
 }
 
+// A hook rejection that persists past maxHookRetries must stash the hook's
+// own complaint in PromptInjection before pausing, so that a subsequent
+// manual /syntropy retry — which routes straight back into work() (see
+// cmdRetry) — carries the failure forward into the next runner turn instead
+// of silently dropping it and risking the exact same rejection repeating.
+func TestWork_HookRejection_ExceedsCap_CarriesFailureIntoRetry(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Tried to fix it."}})
+	hookErr := &git.HookRejectionError{Output: "secret scan: found an AWS key in config.go"}
+	d.withGit(&fakeGit{
+		commitErrSeq: []error{hookErr, hookErr, hookErr},
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusPaused {
+		t.Fatalf("hook rejection persisting past maxHookRetries should pause, got %v", next)
+	}
+	if want := maxHookRetries + 1; len(fr.calls) != want {
+		t.Fatalf("want %d runner invocations (initial + %d retries), got %d", want, maxHookRetries, len(fr.calls))
+	}
+	if r.Object.PromptInjection != hookErr.Output {
+		t.Fatalf("PromptInjection = %q, want the hook's output %q", r.Object.PromptInjection, hookErr.Output)
+	}
+
+	// Simulate `/syntropy retry`: cmdRetry clears PauseReason and routes
+	// back to StatusWorking, which re-runs work() for the same CurrentUnit.
+	// CurrentUnit is untouched by pauseWork, so calling work() again mirrors
+	// that path directly.
+	r.Object.PauseReason = ""
+	fr2 := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Fixed for real."}})
+	d.withGit(&fakeGit{})
+
+	next, err = d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("retry work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Fatalf("retry should ship normally once the hook stops rejecting, got %v", next)
+	}
+	if len(fr2.calls) != 1 {
+		t.Fatalf("want 1 runner invocation on retry, got %d", len(fr2.calls))
+	}
+	if !strings.Contains(fr2.calls[0].Goal, hookErr.Output) {
+		t.Errorf("retry's Goal should carry the prior hook rejection forward; got %q", fr2.calls[0].Goal)
+	}
+	if r.Object.PromptInjection != "" {
+		t.Errorf("PromptInjection must be consumed (single-use) after the retry turn; still: %q", r.Object.PromptInjection)
+	}
+}
+
 func TestWork_RunnerDeclines(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
