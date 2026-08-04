@@ -147,3 +147,4 @@ forces or unlocks.
 | 0097 | `work()` pauses (not fails) on a transient runner/git error pre-MR, resumes into `StatusWorking` | Accepted | 2026-08-03 |
 | 0098 | Planning prompt explicitly instructs against re-proposing blacklisted units | Accepted | 2026-08-04 |
 | 0099 | Per-repo `spec_tool` override is excluded from `MissingFields`         | Accepted | 2026-08-04 |
+| 0100 | `syntropy config check` reports the effective spec tool                 | Accepted | 2026-08-04 |

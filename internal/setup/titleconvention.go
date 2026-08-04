@@ -54,6 +54,21 @@ type RepoConfig struct {
 	SpecTool string `yaml:"spec_tool,omitempty"`
 }
 
+// EffectiveSpecTool returns the spec tool an agent should actually route
+// spec creation/viewing to: this repo's override if one is set, else
+// globalDefault (config.Config.SpecTool, ADR-0051/increment-1), which
+// itself may be empty — meaning fall back to syntropy's own default spec
+// flow. Unlike EffectiveTitleConvention, there's no BlankSentinel case to
+// unwrap: ADR-0099 deliberately gives SpecTool no "asked, declined" state,
+// since an absent override always means exactly one thing (use the
+// global default).
+func (c RepoConfig) EffectiveSpecTool(globalDefault string) string {
+	if c.SpecTool != "" {
+		return c.SpecTool
+	}
+	return globalDefault
+}
+
 // BlankSentinel is written to a RepoConfig field, instead of leaving it
 // as an empty string or omitting it, when the user was explicitly asked
 // and chose not to set a value. Plain "" is ambiguous between "never

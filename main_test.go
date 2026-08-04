@@ -669,6 +669,7 @@ func TestCmdSetup_RepoSpecToolFlagPersists(t *testing.T) {
 // --- config check (ADR-0083) ---
 
 func TestCheckRepoConfig_AbsentFile_ReportsMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	var buf bytes.Buffer
 	missing, err := checkRepoConfig(dir, &buf)
@@ -684,6 +685,7 @@ func TestCheckRepoConfig_AbsentFile_ReportsMissing(t *testing.T) {
 }
 
 func TestCheckRepoConfig_RealValue_ReportsOK(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
 		t.Fatalf("seed .syntropy.yml: %v", err)
@@ -705,6 +707,7 @@ func TestCheckRepoConfig_BlankSentinel_ReportsOK(t *testing.T) {
 	// A field explicitly recorded as setup.BlankSentinel ("blank") must
 	// count as configured — the user already declined it, don't re-flag
 	// it as missing.
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
 		t.Fatalf("seed .syntropy.yml: %v", err)
@@ -719,6 +722,55 @@ func TestCheckRepoConfig_BlankSentinel_ReportsOK(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "OK") {
 		t.Errorf("output should report OK; got %q", buf.String())
+	}
+}
+
+// --- config check: effective spec tool (ADR-0099's deferred consumption) ---
+
+func TestCheckRepoConfig_SpecTool_NeitherSet_ReportsSyntropyDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	if _, err := checkRepoConfig(dir, &buf); err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Spec tool: (none set — syntropy's own default spec flow)") {
+		t.Errorf("got %q, want it to report syntropy's own default spec flow", buf.String())
+	}
+}
+
+func TestCheckRepoConfig_SpecTool_GlobalOnly_ReportsGlobalDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{SpecTool: "spec-kit"}); err != nil {
+		t.Fatalf("save global config: %v", err)
+	}
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	if _, err := checkRepoConfig(dir, &buf); err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Spec tool: spec-kit (global default)") {
+		t.Errorf("got %q, want it to report the global default", buf.String())
+	}
+}
+
+func TestCheckRepoConfig_SpecTool_RepoOverride_TakesPrecedenceOverGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{SpecTool: "spec-kit"}); err != nil {
+		t.Fatalf("save global config: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\nspec_tool: other-tool\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := checkRepoConfig(dir, &buf); err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Spec tool: other-tool (repo override)") {
+		t.Errorf("got %q, want the repo override to take precedence over the global default", buf.String())
 	}
 }
 
