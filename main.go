@@ -1814,6 +1814,7 @@ func cmdSetup(args []string) error {
 	modelFlag := fs.String("model", "", "default model override to persist for the chosen runner (default: prompt if interactive, else leave unset)")
 	specToolFlag := fs.String("spec-tool", "", "default spec tool to persist, e.g. \"spec-kit\" (default: prompt if interactive, else leave unset)")
 	titleConventionFlag := fs.String("title-convention", "", "this repo's PR/MR title convention, written to .syntropy.yml (default: prompt if interactive, else leave unset)")
+	repoSpecToolFlag := fs.String("repo-spec-tool", "", "this repo's spec tool override, written to .syntropy.yml (default: prompt if interactive, else leave unset; falls back to the global --spec-tool default)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1883,14 +1884,18 @@ func cmdSetup(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve title convention: %w", err)
 	}
-	wroteRepoConfig, err := setup.WriteRepoConfig(repoDir, titleConvention, *force)
+	repoSpecTool, err := setup.ResolveRepoSpecTool(*repoSpecToolFlag, interactive, promptForRepoSpecTool(os.Stdin, os.Stdout))
+	if err != nil {
+		return fmt.Errorf("resolve repo spec tool: %w", err)
+	}
+	wroteRepoConfig, err := setup.WriteRepoConfig(repoDir, titleConvention, repoSpecTool, *force)
 	if err != nil {
 		return fmt.Errorf("write .syntropy.yml: %w", err)
 	}
 	switch {
 	case wroteRepoConfig:
-		fmt.Printf("Wrote title convention to %s\n", setup.RepoConfigPath(repoDir))
-	case titleConvention != "":
+		fmt.Printf("Wrote repo config to %s\n", setup.RepoConfigPath(repoDir))
+	case titleConvention != "" || repoSpecTool != "":
 		fmt.Printf(".syntropy.yml already exists at %s (pass --force to overwrite)\n", setup.RepoConfigPath(repoDir))
 	}
 	return nil
@@ -1902,6 +1907,23 @@ func cmdSetup(args []string) error {
 func promptForTitleConvention(r io.Reader, w io.Writer) func() (string, error) {
 	return func() (string, error) {
 		fmt.Fprint(w, "This repo's PR/MR title convention (blank = none): ")
+		scanner := bufio.NewScanner(r)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		return strings.TrimSpace(scanner.Text()), nil
+	}
+}
+
+// promptForRepoSpecTool returns a setup.ResolveRepoSpecTool prompt func
+// that asks the user for this repo's spec tool override on r. Only called
+// when stdin is a TTY and no --repo-spec-tool flag was given.
+func promptForRepoSpecTool(r io.Reader, w io.Writer) func() (string, error) {
+	return func() (string, error) {
+		fmt.Fprint(w, "This repo's spec tool override, e.g. spec-kit (blank = use the global default): ")
 		scanner := bufio.NewScanner(r)
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {

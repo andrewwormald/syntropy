@@ -46,7 +46,7 @@ func TestResolveTitleConvention_InteractivePromptAnswerWins(t *testing.T) {
 
 func TestWriteRepoConfig_SkipsWhenConventionEmpty(t *testing.T) {
 	dir := t.TempDir()
-	wrote, err := WriteRepoConfig(dir, "", false)
+	wrote, err := WriteRepoConfig(dir, "", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestWriteRepoConfig_SkipsWhenConventionEmpty(t *testing.T) {
 
 func TestWriteRepoConfig_WritesFile(t *testing.T) {
 	dir := t.TempDir()
-	wrote, err := WriteRepoConfig(dir, "Conventional Commits", false)
+	wrote, err := WriteRepoConfig(dir, "Conventional Commits", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestWriteRepoConfig_DoesNotClobberExistingWithoutForce(t *testing.T) {
 		t.Fatalf("seed existing file: %v", err)
 	}
 
-	wrote, err := WriteRepoConfig(dir, "new convention", false)
+	wrote, err := WriteRepoConfig(dir, "new convention", "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestWriteRepoConfig_ForceOverwritesExisting(t *testing.T) {
 		t.Fatalf("seed existing file: %v", err)
 	}
 
-	wrote, err := WriteRepoConfig(dir, "new convention", true)
+	wrote, err := WriteRepoConfig(dir, "new convention", "", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,6 +201,73 @@ func TestWriteRepoConfig_ForceOverwritesExisting(t *testing.T) {
 	}
 	if string(data) != "title_convention: new convention\n" {
 		t.Fatalf("got %q, want overwritten content", string(data))
+	}
+}
+
+// --- SpecTool (RepoConfig field, never in MissingFields) ---
+
+func TestResolveRepoSpecTool_FlagWins(t *testing.T) {
+	got, err := ResolveRepoSpecTool("spec-kit", true, func() (string, error) {
+		t.Fatal("prompt should not be called when --repo-spec-tool is set")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "spec-kit" {
+		t.Fatalf("got %q, want flag value", got)
+	}
+}
+
+func TestResolveRepoSpecTool_NonInteractiveWithoutFlagIsEmpty(t *testing.T) {
+	got, err := ResolveRepoSpecTool("", false, func() (string, error) {
+		t.Fatal("prompt should not be called when not interactive")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestResolveRepoSpecTool_InteractivePromptAnswerWins(t *testing.T) {
+	got, err := ResolveRepoSpecTool("", true, func() (string, error) {
+		return "spec-kit", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "spec-kit" {
+		t.Fatalf("got %q, want prompt answer", got)
+	}
+}
+
+func TestWriteRepoConfig_WritesSpecTool(t *testing.T) {
+	dir := t.TempDir()
+	wrote, err := WriteRepoConfig(dir, "", "spec-kit", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !wrote {
+		t.Fatalf("expected write to happen for a non-empty spec tool")
+	}
+	cfg, err := ReadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("read repo config: %v", err)
+	}
+	if cfg.SpecTool != "spec-kit" {
+		t.Fatalf("got %q, want %q", cfg.SpecTool, "spec-kit")
+	}
+}
+
+func TestMissingFields_NeverReportsSpecTool(t *testing.T) {
+	got := MissingFields(RepoConfig{})
+	for _, f := range got {
+		if f == "spec_tool" {
+			t.Fatalf("spec_tool must never appear in MissingFields, got %v", got)
+		}
 	}
 }
 

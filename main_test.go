@@ -637,6 +637,35 @@ func TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce(t *testing.T
 	}
 }
 
+// TestCmdSetup_RepoSpecToolFlagPersists asserts --repo-spec-tool is written
+// verbatim to .syntropy.yml in the current directory, and never counted as
+// a missing field.
+func TestCmdSetup_RepoSpecToolFlagPersists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	if err := cmdSetup([]string{"--repo-spec-tool", "spec-kit"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(".syntropy.yml")
+	if err != nil {
+		t.Fatalf("read .syntropy.yml: %v", err)
+	}
+	if !strings.Contains(string(data), "spec_tool: spec-kit") {
+		t.Fatalf("got %q, want it to contain the given repo spec tool", string(data))
+	}
+
+	var buf bytes.Buffer
+	missing, err := checkRepoConfig(".", &buf)
+	if err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != "title_convention" {
+		t.Fatalf("got missing %v, want only [title_convention] — spec_tool must never be reported missing", missing)
+	}
+}
+
 // --- config check (ADR-0083) ---
 
 func TestCheckRepoConfig_AbsentFile_ReportsMissing(t *testing.T) {
