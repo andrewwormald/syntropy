@@ -559,9 +559,15 @@ func buildPlanningPrompt(s *AgentState) string {
 		}
 		fmt.Fprintln(&b)
 	}
-	if len(s.Completed) > 0 || len(s.Blacklisted) > 0 {
-		fmt.Fprintf(&b, "# Merged so far: %d. Blacklisted: %d.\n\n",
-			len(s.Completed), len(s.Blacklisted))
+	if len(s.Completed) > 0 {
+		fmt.Fprintf(&b, "# Merged so far: %d\n\n", len(s.Completed))
+	}
+	if len(s.Blacklisted) > 0 {
+		fmt.Fprintf(&b, "# Blacklisted units (do not re-propose unless the reason no longer applies)\n\n")
+		for _, u := range s.Blacklisted {
+			fmt.Fprintf(&b, "- **%s**: %s\n", u.UnitID, u.Reason)
+		}
+		fmt.Fprintln(&b)
 	}
 	b.WriteString(`# Your task
 

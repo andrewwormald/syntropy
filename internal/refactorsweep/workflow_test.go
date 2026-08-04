@@ -1441,6 +1441,31 @@ func TestBuildPlanningPrompt_SurfacesRemainderNote(t *testing.T) {
 	}
 }
 
+// TestBuildPlanningPrompt_SurfacesBlacklistReason asserts that a
+// blacklisted unit's actual Reason is rendered in the planning prompt,
+// not just a bare count. Without this, an explicit human rejection (e.g.
+// "/syntropy skip: this breaks the auth flow") is indistinguishable from
+// any other blacklist cause, and the planner can silently re-propose the
+// same unit as a new increment.
+func TestBuildPlanningPrompt_SurfacesBlacklistReason(t *testing.T) {
+	s := &AgentState{
+		Goal: "Multi-item spec",
+		Blacklisted: []BlacklistedUnit{
+			{UnitID: "svc-b", Reason: "skipped by /syntropy skip from @alice: this breaks the auth flow"},
+		},
+	}
+
+	prompt := buildPlanningPrompt(s)
+
+	want := "- **svc-b**: skipped by /syntropy skip from @alice: this breaks the auth flow\n"
+	if !strings.Contains(prompt, want) {
+		t.Errorf("planning prompt missing blacklist reason; want to contain %q, got:\n%s", want, prompt)
+	}
+	if strings.Contains(prompt, "Blacklisted: 1") {
+		t.Errorf("planning prompt should not reduce blacklist info to a bare count, got:\n%s", prompt)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the
