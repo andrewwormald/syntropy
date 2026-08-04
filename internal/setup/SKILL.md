@@ -80,7 +80,15 @@ directly.
    `provider`, `project`, `base_branch`, `base_repo`, `concurrency`,
    `draft_mrs`, `status`) plus a markdown body expanding the goal — see
    the README's Quick Start section in the syntropy repo for a full
-   example, or ask the user for the details you need.
+   example, or ask the user for the details you need. Default to writing
+   it to `~/syntropy-specs/<name>.spec.md` unless the user's told you
+   otherwise — a plain sibling directory, deliberately outside
+   `~/.syntropy/`. Syntropy itself never reads, writes, indexes, or
+   cleans up anything in there; it only ever reads whatever single path
+   you hand it via `--spec` at trigger time. Syntropy owns execution,
+   not the spec-authoring process leading up to it — this is a
+   suggested convention for where *you* keep specs, not something the
+   daemon manages.
 3. **Render the spec for review before triggering it — every time you
    write a new one.** A spec is a real decision (scope, constraints, what
    gets built) made on the user's behalf; it shouldn't sit invisibly on
