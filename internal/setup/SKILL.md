@@ -73,6 +73,16 @@ directly.
    answer, and never do the work of writing a spec only to discover
    afterward that you needed to pause for a missing field.
 
+   The same command's output also has a `Spec tool: ...` line —
+   independent of the exit code, printed either way — telling you where
+   to route spec creation/viewing for this repo: a named tool (e.g.
+   `Spec tool: spec-kit (repo override)` or `(global default)`) means use
+   that tool's own flow instead of the plain markdown-file approach in
+   step 2 below; `Spec tool: (none set — syntropy's own default spec
+   flow)` means proceed as described here. Read this line, don't ask the
+   user which spec tool to use or read `.syntropy.yml`/
+   `~/.syntropy/config.yaml` yourself to figure it out.
+
    Without this, MRs/PRs default to a generic `<goal>: <unit-id>` title —
    which can badly violate a repo's real conventions (e.g. an 80-char CI
    title-length check) and isn't obvious until CI already failed on it.
