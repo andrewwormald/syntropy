@@ -868,6 +868,70 @@ func TestCmdStart_NoConfigLeavesModelEmpty(t *testing.T) {
 	}
 }
 
+// TestCmdStart_PrintsUpdateNotice asserts that once a run is successfully
+// triggered, cmdStart prints a notice if the cached update-check result
+// (ADR-0102) says a newer release is available. Pre-seeding a fresh cache
+// entry means this exercises the wiring without an outbound GitHub call.
+func TestCmdStart_PrintsUpdateNotice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{
+		UpdateCheckedAt:     time.Now(),
+		UpdateLatestVersion: "v99.0.0",
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	daemonURL, _ := startTriggerCapture(t)
+	restore := captureStdout(t)
+
+	err := cmdStart([]string{
+		"--units", "u1",
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+	})
+	out := restore()
+	if err != nil {
+		t.Fatalf("cmdStart: %v", err)
+	}
+	if !strings.Contains(out, "newer syntropy release is available: v99.0.0") {
+		t.Fatalf("got output %q, want an update notice for v99.0.0", out)
+	}
+}
+
+// TestCmdStart_NoUpdateNoticeWhenUpToDate asserts that with a cached
+// check reporting no newer release, cmdStart's output is unaffected.
+func TestCmdStart_NoUpdateNoticeWhenUpToDate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{
+		UpdateCheckedAt:     time.Now(),
+		UpdateLatestVersion: "v0.0.1",
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	daemonURL, _ := startTriggerCapture(t)
+	restore := captureStdout(t)
+
+	err := cmdStart([]string{
+		"--units", "u1",
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+	})
+	out := restore()
+	if err != nil {
+		t.Fatalf("cmdStart: %v", err)
+	}
+	if strings.Contains(out, "newer syntropy release") {
+		t.Fatalf("got output %q, want no update notice", out)
+	}
+}
+
 // --- isAutoPaused / directResume RunStatePaused tests (ADR-0062) ---
 
 func TestIsAutoPaused(t *testing.T) {

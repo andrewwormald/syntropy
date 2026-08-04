@@ -45,6 +45,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/setup"
 	"github.com/andrewwormald/syntropy/internal/spec"
 	"github.com/andrewwormald/syntropy/internal/store"
+	"github.com/andrewwormald/syntropy/internal/update"
 	"github.com/andrewwormald/syntropy/internal/webhook"
 )
 
@@ -1040,7 +1041,29 @@ func cmdStart(args []string) error {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	fmt.Printf("Triggered run %s (foreign id: %s, mode: %s)\n", out.RunID, out.ForeignID, req.Mode)
+
+	printUpdateNotice()
 	return nil
+}
+
+// printUpdateNotice checks (best-effort, cached) whether a newer syntropy
+// release exists and prints a one-line notice if so. A failed check (e.g.
+// offline) is silently ignored — it must never fail or slow down `start`
+// itself, since the calling agent has already gotten what it needs.
+func printUpdateNotice() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := update.Check(ctx, home, version, nil, "")
+	if err != nil {
+		return
+	}
+	if result.Available {
+		fmt.Printf("A newer syntropy release is available: %s (you have %s)\n", result.Latest, version)
+	}
 }
 
 func cmdStatus(args []string) error {
