@@ -152,3 +152,4 @@ forces or unlocks.
 | 0102 | `syntropy start` prints a best-effort update notice after triggering     | Accepted | 2026-08-04 |
 | 0103 | `SyncWithBase` discards uncommitted changes instead of refusing (supersedes the dirty-worktree guard in ADR-0046) | Accepted | 2026-08-05 |
 | 0104 | `discardStrayWork` (formerly `commitStrayWork`) discards stray edits instead of committing them (supersedes ADR-0074's commit choice) | Accepted | 2026-08-05 |
+| 0105 | GitLab `ListNotesSince` sources from `/discussions`, not `/notes`, so inline diff comments get a `DiscussionID` | Accepted | 2026-08-05 |

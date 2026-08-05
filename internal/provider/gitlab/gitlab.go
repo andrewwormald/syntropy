@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -288,56 +289,65 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 // from AgentState behaves the same way for both providers.
 const streamNote = "note"
 
-// ListNotesSince → GET /api/v4/projects/:id/merge_requests/:iid/notes.
+// ListNotesSince → GET /api/v4/projects/:id/merge_requests/:iid/discussions.
 // Returns notes whose `id` exceeds the watermark (i.e. arrived since the
 // last poll). The poller stores the highest id seen on AgentState.
+//
+// This sources from /discussions rather than the flat /notes endpoint:
+// GitLab's /notes response only populates discussion_id on plain top-level
+// notes — inline diff comments (DiffNote) come back with an empty
+// discussion_id there. /discussions nests every note (diff or plain) under
+// its owning discussion object, whose id is authoritative for both, so a
+// reply to an inline review comment threads instead of always falling back
+// to a new top-level comment.
 func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, since provider.NoteCursor) ([]provider.NotePoll, error) {
 	sinceNoteID, ok := since.ByStream[streamNote]
 	if !ok {
 		sinceNoteID = since.Legacy
 	}
-	// GitLab's /notes endpoint only accepts order_by ∈ {created_at,
-	// updated_at} (sending order_by=id returns 400). We use the default
-	// (created_at) sort=desc and filter by id > sinceNoteID client-side —
-	// note IDs are monotonic per-MR so this is equivalent.
-	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes?sort=desc&per_page=50",
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/discussions?per_page=50",
 		url.PathEscape(projectID), mrIID)
-	var raw []struct {
-		ID           int64  `json:"id"`
-		Body         string `json:"body"`
-		System       bool   `json:"system"`        // system notes (state changes etc.) — skip
-		DiscussionID string `json:"discussion_id"` // present on regular MR notes since GitLab 13.x
-		Author       struct {
-			ID       int    `json:"id"`
-			Username string `json:"username"`
-			Bot      bool   `json:"bot"`
-		} `json:"author"`
+	var discussions []struct {
+		ID    string `json:"id"`
+		Notes []struct {
+			ID     int64  `json:"id"`
+			Body   string `json:"body"`
+			System bool   `json:"system"` // system notes (state changes etc.) — skip
+			Author struct {
+				ID       int    `json:"id"`
+				Username string `json:"username"`
+				Bot      bool   `json:"bot"`
+			} `json:"author"`
+		} `json:"notes"`
 	}
-	if err := p.doJSON(ctx, http.MethodGet, path, nil, &raw); err != nil {
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &discussions); err != nil {
 		return nil, err
 	}
-	// Filter to non-system, id > sinceNoteID; return in ascending id order.
-	out := make([]provider.NotePoll, 0, len(raw))
-	for _, n := range raw {
-		if n.System || n.ID <= sinceNoteID {
-			continue
+	// Filter to non-system, id > sinceNoteID, tagging every note with its
+	// owning discussion's id regardless of whether it's a diff note or a
+	// plain top-level note.
+	out := make([]provider.NotePoll, 0)
+	for _, d := range discussions {
+		for _, n := range d.Notes {
+			if n.System || n.ID <= sinceNoteID {
+				continue
+			}
+			out = append(out, provider.NotePoll{
+				ID:           n.ID,
+				Body:         n.Body,
+				DiscussionID: d.ID,
+				Author: provider.User{
+					ID:     fmt.Sprintf("%d", n.Author.ID),
+					Handle: n.Author.Username,
+					Bot:    n.Author.Bot,
+				},
+				Stream: streamNote,
+			})
 		}
-		out = append(out, provider.NotePoll{
-			ID:           n.ID,
-			Body:         n.Body,
-			DiscussionID: n.DiscussionID,
-			Author: provider.User{
-				ID:     fmt.Sprintf("%d", n.Author.ID),
-				Handle: n.Author.Username,
-				Bot:    n.Author.Bot,
-			},
-			Stream: streamNote,
-		})
 	}
-	// Reverse to ascending so callers process in chronological order.
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
+	// /discussions has no sort/order_by support, so sort ascending by id
+	// ourselves rather than relying on response order.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
