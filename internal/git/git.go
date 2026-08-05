@@ -32,6 +32,15 @@ type Git interface {
 	// always sees the current state of base.
 	HardReset(ctx context.Context, dir, baseBranch string) error
 
+	// DiscardUncommitted resets `dir`'s tracked files to HEAD and removes
+	// untracked files, throwing away anything left uncommitted — but keeps
+	// HEAD itself untouched, so any commits the branch already has ahead of
+	// origin/<baseBranch> survive. Unlike HardReset (which forces `dir` to
+	// match origin/<baseBranch>, discarding local commits too), this is for
+	// worktrees whose own commits must be preserved and only the leftover
+	// working-tree mess needs to go.
+	DiscardUncommitted(ctx context.Context, dir string) error
+
 	// HasChanges reports whether the worktree at `dir` has uncommitted
 	// modifications (staged or unstaged, including untracked files).
 	HasChanges(ctx context.Context, dir string) (bool, error)
@@ -273,6 +282,16 @@ func (g *ExecGit) HardReset(ctx context.Context, dir, baseBranch string) error {
 	}
 	if err := g.run(ctx, dir, "clean", "-fdx"); err != nil {
 		return fmt.Errorf("HardReset: clean: %w", err)
+	}
+	return nil
+}
+
+func (g *ExecGit) DiscardUncommitted(ctx context.Context, dir string) error {
+	if err := g.run(ctx, dir, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("DiscardUncommitted: reset: %w", err)
+	}
+	if err := g.run(ctx, dir, "clean", "-fd"); err != nil {
+		return fmt.Errorf("DiscardUncommitted: clean: %w", err)
 	}
 	return nil
 }

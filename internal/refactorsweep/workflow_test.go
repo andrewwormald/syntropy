@@ -283,6 +283,7 @@ type fakeGit struct {
 
 	ensureErr  error
 	resetErr   error
+	discardErr error
 	syncErr    error
 	commitErr    error
 	commitErrSeq []error // optional per-call override, see Commit
@@ -299,6 +300,7 @@ type fakeGit struct {
 
 	ensures      []ensureCall
 	resets       []string
+	discards     []string
 	syncs        []string
 	commits      []string
 	pushes       []string
@@ -322,6 +324,13 @@ func (g *fakeGit) HardReset(_ context.Context, dir, baseBranch string) error {
 	defer g.mu.Unlock()
 	g.resets = append(g.resets, dir+"@"+baseBranch)
 	return g.resetErr
+}
+
+func (g *fakeGit) DiscardUncommitted(_ context.Context, dir string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.discards = append(g.discards, dir)
+	return g.discardErr
 }
 
 func (g *fakeGit) SyncWithBase(_ context.Context, dir, baseBranch string) error {
