@@ -2855,20 +2855,19 @@ func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
 	}
 }
 
-// Regression (ADR-0074): a runner can edit files even when it concludes
-// DecisionAsk/Fail/NoChange/RetryCI — e.g. a partial edit made before
-// deciding to ask a question. Those decisions used to leave that work
-// permanently uncommitted, silently tripping a future SyncWithBase's
-// uncommitted-changes guard. Found live on a real run stuck on exactly
-// this after an address_comment turn returned something other than
-// Continue/Done. All four decisions must commit any stray work first —
-// but NOT push it: unlike Continue/Done, these decisions are the runner
-// saying the turn wasn't shippable, so there's no verification a stray
-// edit even builds; a local commit satisfies SyncWithBase without
-// exposing unverified work on the remote branch. A later Continue/Done
-// turn's own HasWorkBeyondBase check will find and push it once
-// something actually says it's shippable.
-func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkLocallyBeforePausing(t *testing.T) {
+// Regression (ADR-0074, reworked by ADR-0104): a runner can edit files
+// even when it concludes DecisionAsk/Fail/NoChange/RetryCI — e.g. a
+// partial edit made before deciding to ask a question. Those decisions
+// used to leave that work permanently uncommitted, silently tripping a
+// future SyncWithBase's uncommitted-changes guard. Found live on a real
+// run stuck on exactly this after an address_comment turn returned
+// something other than Continue/Done. All four decisions now discard any
+// stray work rather than committing it (ADR-0104): unlike Continue/Done,
+// these decisions are the runner saying the turn wasn't shippable, so
+// there's no verification a stray edit even builds, and SyncWithBase
+// itself now discards a dirty tree anyway (ADR-0103) — a local commit
+// here wouldn't buy anything a discard doesn't.
+func TestResume_NoteAdded_DecisionAsk_DiscardsStrayWorkBeforePausing(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{
@@ -2888,15 +2887,18 @@ func TestResume_NoteAdded_DecisionAsk_CommitsStrayWorkLocallyBeforePausing(t *te
 	if next != StatusPaused {
 		t.Errorf("want Paused on DecisionAsk, got %v", next)
 	}
-	if len(g.commits) != 1 {
-		t.Errorf("DecisionAsk must commit any stray work before pausing; commits=%v", g.commits)
+	if len(g.discards) != 1 {
+		t.Errorf("DecisionAsk must discard any stray work before pausing; discards=%v", g.discards)
+	}
+	if len(g.commits) != 0 {
+		t.Errorf("DecisionAsk must NOT commit stray work; commits=%v", g.commits)
 	}
 	if len(g.pushes) != 0 {
 		t.Errorf("DecisionAsk must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
 }
 
-func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkLocallyBeforePausing(t *testing.T) {
+func TestResume_NoteAdded_DecisionFail_DiscardsStrayWorkBeforePausing(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{
@@ -2916,15 +2918,18 @@ func TestResume_NoteAdded_DecisionFail_CommitsStrayWorkLocallyBeforePausing(t *t
 	if next != StatusPaused {
 		t.Errorf("want Paused on DecisionFail, got %v", next)
 	}
-	if len(g.commits) != 1 {
-		t.Errorf("DecisionFail must commit any stray work before pausing; commits=%v", g.commits)
+	if len(g.discards) != 1 {
+		t.Errorf("DecisionFail must discard any stray work before pausing; discards=%v", g.discards)
+	}
+	if len(g.commits) != 0 {
+		t.Errorf("DecisionFail must NOT commit stray work; commits=%v", g.commits)
 	}
 	if len(g.pushes) != 0 {
 		t.Errorf("DecisionFail must NOT push unverified stray work; pushes=%v", g.pushes)
 	}
 }
 
-func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWorkLocally(t *testing.T) {
+func TestResume_NoteAdded_DecisionNoChange_DiscardsStrayWork(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
@@ -2941,8 +2946,11 @@ func TestResume_NoteAdded_DecisionNoChange_CommitsStrayWorkLocally(t *testing.T)
 	if next != StatusAwaitingMerge {
 		t.Errorf("want AwaitingMerge on DecisionNoChange, got %v", next)
 	}
-	if len(g.commits) != 1 {
-		t.Errorf("DecisionNoChange must commit any stray work; commits=%v", g.commits)
+	if len(g.discards) != 1 {
+		t.Errorf("DecisionNoChange must discard any stray work; discards=%v", g.discards)
+	}
+	if len(g.commits) != 0 {
+		t.Errorf("DecisionNoChange must NOT commit stray work; commits=%v", g.commits)
 	}
 	if len(g.pushes) != 0 {
 		t.Errorf("DecisionNoChange must NOT push unverified stray work; pushes=%v", g.pushes)
@@ -2981,9 +2989,9 @@ func TestResume_PipelineFailed_DecisionNoChange_StaysSilent(t *testing.T) {
 	}
 }
 
-// No stray work → no-op. Confirms the safety net doesn't commit on every
+// No stray work → no-op. Confirms the safety net doesn't discard on every
 // turn regardless of whether the runner actually touched anything.
-func TestResume_NoteAdded_DecisionNoChange_NoStrayWork_DoesNotCommit(t *testing.T) {
+func TestResume_NoteAdded_DecisionNoChange_NoStrayWork_DoesNotDiscard(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionNoChange, Summary: "Nothing actionable."}})
@@ -2998,6 +3006,9 @@ func TestResume_NoteAdded_DecisionNoChange_NoStrayWork_DoesNotCommit(t *testing.
 	}
 	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
 		t.Fatalf("resume: %v", err)
+	}
+	if len(g.discards) != 0 {
+		t.Errorf("no stray work present, should not discard; discards=%v", g.discards)
 	}
 	if len(g.commits) != 0 {
 		t.Errorf("no stray work present, should not commit; commits=%v", g.commits)

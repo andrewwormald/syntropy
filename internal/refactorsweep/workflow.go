@@ -1638,7 +1638,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// (found live — see ADR-0074). Done/Continue above already cover
 			// themselves via their own hasWork check; this is the same safety
 			// net for the decisions that don't otherwise touch git.
-			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			d.discardStrayWork(ctx, req.Worktree)
 			// A real human comment (EventNoteAdded) deserves an actual reply
 			// with the runner's reasoning — same treatment as the Done+
 			// !hasWork "(No code changes were needed.)" path above. Found
@@ -1662,13 +1662,13 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			}
 			return StatusAwaitingMerge, nil
 		case DecisionAsk:
-			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			d.discardStrayWork(ctx, req.Worktree)
 			r.Object.PauseReason = askPausePrefix + resp.Question
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 			return StatusPaused, nil
 		case DecisionFail:
-			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			d.discardStrayWork(ctx, req.Worktree)
 			r.Object.PauseReason = resp.Summary
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
@@ -1679,7 +1679,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// maxCIRetries times per unit. Exceeding the cap means retrying
 			// alone isn't clearing it, so pause for a human rather than loop
 			// forever.
-			d.commitStrayWork(ctx, req.Worktree, branchName(r.RunID, unitID), buildCommitMessage(phase, unitID, ev, r.RunID))
+			d.discardStrayWork(ctx, req.Worktree)
 			if r.Object.CIRetryCounts == nil {
 				r.Object.CIRetryCounts = map[string]int{}
 			}
@@ -2026,37 +2026,38 @@ func shortRunID(runID string) string {
 	return runID
 }
 
-// commitStrayWork is a safety net for invokeForEvent decision paths that
+// discardStrayWork is a safety net for invokeForEvent decision paths that
 // don't otherwise touch git (NoChange/Ask/Fail/RetryCI): the runner can
 // still have edited files even after concluding nothing shippable came of
 // it — e.g. a partial edit made before deciding to ask a question, or
-// before giving up. Left uncommitted, that silently trips a future
+// before giving up. Left uncommitted, that used to silently trip a future
 // SyncWithBase's uncommitted-changes guard (found live — see ADR-0074).
 //
-// Commits ONLY — deliberately does not push. These decisions are the
-// runner saying "this isn't the deliverable" (gave up, needs input,
-// judged CI as infra noise), so there's no verification the stray edit
-// even builds; pushing it straight to a branch reviewers/CI will see
-// would trade the uncommitted-tree bug for a worse one (unreviewed,
-// unverified code landing on the MR). A local commit already satisfies
-// SyncWithBase (it only checks for a dirty tree) without that exposure —
-// the work isn't lost, either: the next Continue/Done turn's own
-// HasWorkBeyondBase check (or a later push some other command triggers)
-// will find it and push it once something actually says it's shippable.
+// Discards rather than commits (ADR-0104, reversing ADR-0074's original
+// choice): these decisions are the runner saying "this isn't the
+// deliverable" (gave up, needs input, judged CI as infra noise), so
+// there's no verification the stray edit even builds — and now that
+// SyncWithBase itself discards a dirty tree instead of refusing
+// (ADR-0103), a local commit here would no longer buy anything a discard
+// doesn't; it would just risk a half-finished edit surviving to be folded
+// into a future turn's work. The harness owns every commit that ships, so
+// nothing worth keeping should ever depend on surviving between turns as
+// an uncommitted edit — if the runner wanted it kept, Done/Continue's own
+// hasWork check above already committed and pushed it.
 //
 // Best-effort: any error here is swallowed rather than surfaced, since it
 // must not block the decision's own pause/reply handling below — worst
 // case is the same uncommitted-changes guard firing as before this fix
 // existed, not a new failure mode.
-func (d *Deps) commitStrayWork(ctx context.Context, worktree, branch, commitMsg string) {
+func (d *Deps) discardStrayWork(ctx context.Context, worktree string) {
 	if d.Git == nil {
 		return
 	}
-	hasWork, err := d.Git.HasWorkBeyondBase(ctx, worktree, branch)
-	if err != nil || !hasWork {
+	hasChanges, err := d.Git.HasChanges(ctx, worktree)
+	if err != nil || !hasChanges {
 		return
 	}
-	_ = d.Git.Commit(ctx, worktree, commitMsg)
+	_ = d.Git.DiscardUncommitted(ctx, worktree)
 }
 
 // buildCommitMessage produces a commit message for a follow-up commit
