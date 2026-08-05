@@ -305,6 +305,76 @@ func TestReplyToDiscussion(t *testing.T) {
 	}
 }
 
+func TestListNotesSince_PopulatesDiscussionIDForDiffAndTopLevelNotes(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		_, _ = w.Write([]byte(`[
+			{
+				"id": "disc-diff-1",
+				"notes": [
+					{"id": 10, "body": "please fix this line", "system": false, "author": {"id": 1, "username": "reviewer", "bot": false}}
+				]
+			},
+			{
+				"id": "disc-top-1",
+				"individual_note": true,
+				"notes": [
+					{"id": 11, "body": "looks good overall", "system": false, "author": {"id": 2, "username": "author", "bot": false}}
+				]
+			},
+			{
+				"id": "disc-sys-1",
+				"notes": [
+					{"id": 12, "body": "changed the description", "system": true, "author": {"id": 3, "username": "ghost", "bot": false}}
+				]
+			}
+		]`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{})
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+	if !strings.Contains(gotPath, "/api/v4/projects/owner/repo/merge_requests/42/discussions") {
+		t.Errorf("path: got %s", gotPath)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 notes (system note filtered out), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != 10 || got[0].DiscussionID != "disc-diff-1" {
+		t.Errorf("diff note: want id=10 discussionID=disc-diff-1, got id=%d discussionID=%s", got[0].ID, got[0].DiscussionID)
+	}
+	if got[1].ID != 11 || got[1].DiscussionID != "disc-top-1" {
+		t.Errorf("top-level note: want id=11 discussionID=disc-top-1, got id=%d discussionID=%s", got[1].ID, got[1].DiscussionID)
+	}
+}
+
+func TestListNotesSince_FiltersByWatermarkAndSortsAscending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"id": "disc-a", "notes": [{"id": 20, "body": "newest", "system": false, "author": {"id": 1, "username": "u", "bot": false}}]},
+			{"id": "disc-b", "notes": [{"id": 5, "body": "too old", "system": false, "author": {"id": 1, "username": "u", "bot": false}}]},
+			{"id": "disc-c", "notes": [{"id": 15, "body": "middle", "system": false, "author": {"id": 1, "username": "u", "bot": false}}]}
+		]`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{Legacy: 10})
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 notes above watermark, got %d: %+v", len(got), got)
+	}
+	if got[0].ID != 15 || got[1].ID != 20 {
+		t.Errorf("want ascending [15, 20], got [%d, %d]", got[0].ID, got[1].ID)
+	}
+}
+
 // --- TokenSource tests (ADR-0063: don't cache a token that can go stale) ---
 
 func TestNew_RequiresTokenOrTokenSource(t *testing.T) {
