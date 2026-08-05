@@ -1348,8 +1348,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	// conflict resolution never runs against a stale main (ADR-0045).
 	// An ordinary merge conflict is not an error — SyncWithBase leaves
 	// the unmerged paths in the worktree for the runner to resolve as
-	// part of its turn. A genuine failure (fetch error, dirty worktree)
-	// pauses the Run like the other git failures below.
+	// part of its turn. Any uncommitted leftovers from a prior turn are
+	// discarded rather than blocking the sync. A genuine failure (fetch
+	// error, etc.) pauses the Run like the other git failures below.
 	if sErr := d.Git.SyncWithBase(ctx, worktree, baseBranch); sErr != nil {
 		mr := r.Object.InFlight[unitID]
 		r.Object.PauseReason = fmt.Sprintf("git SyncWithBase failed before handling %s: %v", ev.Kind, sErr)

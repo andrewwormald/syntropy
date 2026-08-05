@@ -115,3 +115,12 @@ mechanism; the call site is a small, separate, easily-reviewed diff.
   untouched.
 - `TestExecGit_SyncWithBase_FetchErrorPropagates` — a nonexistent base
   branch returns a real error.
+
+## Superseded in part
+
+The dirty-worktree guard described above (`Decision`, `Consequences`, and
+`TestExecGit_SyncWithBase_RefusesDirtyWorktree`) is superseded by
+[ADR-0103](0103-syncwithbase-discards-instead-of-refusing.md): `SyncWithBase`
+now discards uncommitted changes instead of refusing to sync. The rest of
+this ADR — the fetch/merge mechanism and treating merge conflicts as
+non-error output — still stands.

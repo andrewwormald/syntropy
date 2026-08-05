@@ -353,12 +353,12 @@ func TestExecGit_SyncWithBase_LeavesConflictForRunner(t *testing.T) {
 	}
 }
 
-// TestExecGit_SyncWithBase_RefusesDirtyWorktree covers the upfront guard:
-// uncommitted changes at call time (e.g. left by an interrupted invocation)
-// must make SyncWithBase refuse before fetching/merging, even when the
+// TestExecGit_SyncWithBase_DiscardsDirtyWorktree covers the upfront
+// discard: uncommitted changes at call time (e.g. left by an interrupted
+// invocation) must be thrown away before fetching/merging, even when the
 // changes wouldn't overlap the merge — git itself would silently merge
 // over those.
-func TestExecGit_SyncWithBase_RefusesDirtyWorktree(t *testing.T) {
+func TestExecGit_SyncWithBase_DiscardsDirtyWorktree(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -392,21 +392,17 @@ func TestExecGit_SyncWithBase_RefusesDirtyWorktree(t *testing.T) {
 	// Leave an uncommitted change in the worktree.
 	writeFile(t, worktreeDir, "wip.md", "uncommitted\n")
 
-	if err := g.SyncWithBase(ctx, worktreeDir, "main"); err == nil {
-		t.Fatalf("SyncWithBase on a dirty worktree should refuse and return an error")
+	if err := g.SyncWithBase(ctx, worktreeDir, "main"); err != nil {
+		t.Fatalf("SyncWithBase: %v", err)
 	}
 
-	// The merge must not have happened: base's new file should be absent.
-	if _, err := os.Stat(filepath.Join(worktreeDir, "other.md")); !os.IsNotExist(err) {
-		t.Errorf("other.md should not exist — SyncWithBase must not merge a dirty worktree; err=%v", err)
+	// The merge must have happened: base's new file should now be present.
+	if _, err := os.Stat(filepath.Join(worktreeDir, "other.md")); err != nil {
+		t.Errorf("other.md should exist — SyncWithBase must merge once the dirty tree is discarded; err=%v", err)
 	}
-	// The uncommitted change should be untouched.
-	wip, err := os.ReadFile(filepath.Join(worktreeDir, "wip.md"))
-	if err != nil {
-		t.Fatalf("read wip.md: %v", err)
-	}
-	if string(wip) != "uncommitted\n" {
-		t.Errorf("wip.md altered by refused sync: %q", wip)
+	// The uncommitted change must be gone.
+	if _, err := os.Stat(filepath.Join(worktreeDir, "wip.md")); !os.IsNotExist(err) {
+		t.Errorf("wip.md should have been discarded by SyncWithBase; err=%v", err)
 	}
 }
 
