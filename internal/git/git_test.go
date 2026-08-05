@@ -148,6 +148,77 @@ func TestExecGit_HardReset_DiscardsLocalChanges(t *testing.T) {
 	}
 }
 
+// TestExecGit_DiscardUncommitted_KeepsCommitsButDropsWorkingTreeMess proves
+// DiscardUncommitted resets tracked-file edits and removes untracked files,
+// while — unlike HardReset — preserving commits the branch has made beyond
+// origin/<baseBranch>.
+func TestExecGit_DiscardUncommitted_KeepsCommitsButDropsWorkingTreeMess(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "v1")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/plan/abc"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Give the branch a commit of its own, ahead of origin/main.
+	writeFile(t, worktreeDir, "OWN.md", "own work\n")
+	if err := g.Commit(ctx, worktreeDir, "add OWN.md"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	headBefore, err := g.runOut(ctx, worktreeDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+
+	// Plant a local modification and an untracked file on top of that commit.
+	writeFile(t, worktreeDir, "README.md", "tampered\n")
+	writeFile(t, worktreeDir, "untracked.txt", "should be gone\n")
+
+	if err := g.DiscardUncommitted(ctx, worktreeDir); err != nil {
+		t.Fatalf("DiscardUncommitted: %v", err)
+	}
+
+	// README.md should be back to HEAD's version; untracked.txt should be gone.
+	readme, err := os.ReadFile(filepath.Join(worktreeDir, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(readme) != "v1\n" {
+		t.Errorf("README.md not restored: %q", readme)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Errorf("untracked.txt should have been removed; err=%v", err)
+	}
+	// OWN.md, and the commit that added it, must survive — DiscardUncommitted
+	// only throws away uncommitted mess, not the branch's own commits.
+	if _, err := os.Stat(filepath.Join(worktreeDir, "OWN.md")); err != nil {
+		t.Errorf("OWN.md should have survived: %v", err)
+	}
+	headAfter, err := g.runOut(ctx, worktreeDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	if headAfter != headBefore {
+		t.Errorf("HEAD moved: want unchanged at %q, got %q", headBefore, headAfter)
+	}
+}
+
 // TestExecGit_SyncWithBase_FastForwardsWithoutLosingLocalCommits covers the
 // common case: base has moved on, the feature branch has its own commit,
 // and the two don't conflict. SyncWithBase should bring base's commit in

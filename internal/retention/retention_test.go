@@ -58,6 +58,9 @@ func (g *fakeGit) EnsureBranch(context.Context, string, string, string, string) 
 	panic("not used by retention")
 }
 func (g *fakeGit) HardReset(context.Context, string, string) error { panic("not used by retention") }
+func (g *fakeGit) DiscardUncommitted(context.Context, string) error {
+	panic("not used by retention")
+}
 func (g *fakeGit) HasChanges(context.Context, string) (bool, error) {
 	panic("not used by retention")
 }
