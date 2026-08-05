@@ -345,11 +345,12 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		return fmt.Errorf("Commit: add tracked: %w", err)
 	}
 
-	// Stage untracked, non-ignored files — but skip blobs that look like
-	// binary build artefacts so a runner that ran `go build` doesn't get
-	// its compiled output swept into the commit. Many repos enforce this
-	// via pre-commit hooks that cap file size; we filter earlier so the
-	// hook never has to fire.
+	// Stage untracked, non-ignored files — but skip (and delete) blobs
+	// that look like binary build artefacts so a runner that ran `go
+	// build` doesn't get its compiled output swept into the commit, and
+	// so it doesn't linger uncommitted in the worktree either. Many repos
+	// enforce this via pre-commit hooks that cap file size; we filter
+	// earlier so the hook never has to fire.
 	untracked, err := g.runOut(ctx, dir, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		return fmt.Errorf("Commit: list untracked: %w", err)
@@ -359,8 +360,12 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		if name == "" {
 			continue
 		}
-		if looksLikeBinary(filepath.Join(dir, name)) {
+		path := filepath.Join(dir, name)
+		if looksLikeBinary(path) {
 			skipped = append(skipped, name)
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("Commit: delete skipped binary %s: %w", name, err)
+			}
 			continue
 		}
 		if err := g.run(ctx, dir, "add", "--", name); err != nil {
@@ -368,7 +373,7 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		}
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "syntropy git: skipped %d untracked binary file(s): %s\n",
+		fmt.Fprintf(os.Stderr, "syntropy git: deleted %d untracked binary file(s) instead of committing: %s\n",
 			len(skipped), strings.Join(skipped, ", "))
 	}
 

@@ -466,8 +466,9 @@ func TestExecGit_GIT_TERMINAL_PROMPT_DisablesPrompting(t *testing.T) {
 // where a runner runs `go build` inside the worktree, the resulting
 // binary lands alongside the source, and `git add -A` would otherwise
 // sweep it into the commit (triggering pre-commit hooks that cap file
-// size). After the fix, Commit must stage the text file and leave the
-// binary out.
+// size). After the fix, Commit must stage the text file, leave the
+// binary out of the commit, and delete it from the worktree rather than
+// leaving it to linger uncommitted.
 func TestExecGit_Commit_SkipsUntrackedBinaries(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -528,10 +529,11 @@ func TestExecGit_Commit_SkipsUntrackedBinaries(t *testing.T) {
 		t.Errorf("commit must NOT include the %s binary, got %v", binName, files)
 	}
 
-	// The binary should still be present in the worktree (we skip it from
-	// staging, we don't delete it — the runner may still want to use it).
-	if _, err := os.Stat(filepath.Join(worktreeDir, binName)); err != nil {
-		t.Errorf("binary should still exist in worktree: %v", err)
+	// The binary should be deleted from the worktree, not left to linger
+	// uncommitted — the harness owns every commit, so nothing worth
+	// keeping should ever sit uncommitted between turns.
+	if _, err := os.Stat(filepath.Join(worktreeDir, binName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("binary should have been deleted from worktree, stat err = %v", err)
 	}
 }
 
@@ -567,6 +569,9 @@ func TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges(t *testing.T) {
 	}
 	if err := g.Commit(ctx, worktreeDir, "msg"); !errors.Is(err, ErrNoChanges) {
 		t.Errorf("Commit with only-binary untracked: want ErrNoChanges, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "blob")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("blob should have been deleted from worktree, stat err = %v", err)
 	}
 }
 
