@@ -1,6 +1,6 @@
 # ADR-0103: `SyncWithBase` discards uncommitted changes instead of refusing
 
-**Status**: Accepted
+**Status**: Accepted (supersedes the dirty-worktree guard from [ADR-0046](0046-sync-with-base-before-conflict-resolution.md); that ADR's fetch/merge/conflict-swallowing decisions are unaffected)
 **Date**: 2026-08-05
 
 ## Context
