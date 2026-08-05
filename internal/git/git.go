@@ -90,10 +90,11 @@ type Git interface {
 	// invocations so conflict resolution never judges against a stale base
 	// (see ADR-0045).
 	//
-	// SyncWithBase requires a clean worktree: if `dir` has uncommitted
-	// changes (e.g. from an interrupted invocation) it returns an error
-	// without fetching or merging, so those changes are never silently
-	// merged over.
+	// SyncWithBase discards any uncommitted changes in `dir` (e.g. left
+	// behind by an interrupted invocation) before fetching or merging, via
+	// DiscardUncommitted — so those changes are never silently folded into
+	// the merge result, and the Run never pauses on a stray dirty tree the
+	// harness never committed.
 	//
 	// If the merge produces conflicts, that's a legitimate outcome, not an
 	// error: SyncWithBase returns nil and leaves the worktree with unmerged
@@ -448,16 +449,14 @@ func (g *ExecGit) RemoveWorktree(ctx context.Context, baseRepo, dir string) erro
 }
 
 func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) error {
-	// Refuse to merge over uncommitted changes. Git only rejects a dirty
-	// worktree when the changes overlap the merge; non-overlapping ones
-	// (e.g. left by an interrupted invocation) would be silently folded
-	// into the merge result, so guard upfront rather than rely on git.
-	dirty, err := g.HasChanges(ctx, dir)
-	if err != nil {
+	// Throw away any uncommitted changes before merging. Git only rejects a
+	// dirty worktree when the changes overlap the merge; non-overlapping
+	// ones (e.g. left by an interrupted invocation) would otherwise be
+	// silently folded into the merge result. The harness owns every
+	// commit, so nothing worth keeping should ever be sitting uncommitted
+	// here between turns — discard it rather than refuse and pause the Run.
+	if err := g.DiscardUncommitted(ctx, dir); err != nil {
 		return fmt.Errorf("SyncWithBase: %w", err)
-	}
-	if dirty {
-		return fmt.Errorf("SyncWithBase: worktree %s has uncommitted changes; refusing to fetch/merge", dir)
 	}
 	// Same shared-refs lock contention as EnsureBranch/HardReset (ADR-0059).
 	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
