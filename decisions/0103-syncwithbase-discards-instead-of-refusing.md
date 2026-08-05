@@ -1,6 +1,6 @@
 # ADR-0103: `SyncWithBase` discards uncommitted changes instead of refusing
 
-**Status**: Accepted (supersedes the dirty-worktree guard from [ADR-0046](0046-sync-with-base-before-conflict-resolution.md); that ADR's fetch/merge/conflict-swallowing decisions are unaffected)
+**Status**: Accepted (supersedes the dirty-worktree guard from [ADR-0046](0046-sync-with-base-before-conflict-resolution.md); that ADR's fetch/merge/conflict-swallowing decisions are unaffected. [ADR-0104](0104-discardstraywork-discards-instead-of-committing.md) extends the same discard rule to `commitStrayWork`/`discardStrayWork`, so the "must commit it" line below no longer describes that helper)
 **Date**: 2026-08-05
 
 ## Context

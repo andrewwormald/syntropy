@@ -1,6 +1,6 @@
 # ADR-0074: Commit/push stray work on every `invokeForEvent` decision, not just Continue/Done
 
-**Status**: Accepted
+**Status**: Accepted (its "commit, don't discard" choice is superseded by [ADR-0104](0104-discardstraywork-discards-instead-of-committing.md); the placement — call it first in the four branches below — still stands)
 **Date**: 2026-07-27
 
 ## Context
@@ -137,3 +137,13 @@ change is shippable.
   there's a specific reason not to (e.g. the unit's worktree is about
   to be removed anyway, as in `work()`'s `DecisionFail`/`NoChange`
   branches, where `RemoveWorktree` makes any leftover dirt moot).
+
+## Superseded in part
+
+Committing (rather than discarding) the stray edit is superseded by
+[ADR-0104](0104-discardstraywork-discards-instead-of-committing.md):
+`commitStrayWork` is renamed `discardStrayWork` and now throws the stray
+edit away via `DiscardUncommitted` instead of preserving it as a local,
+unpushed commit. The rest of this ADR — calling it first in
+`DecisionNoChange`/`Ask`/`Fail`/`RetryCI`, and never pushing — still
+stands.
