@@ -1,7 +1,4 @@
 <div align="center">
-  <h1>In Active Development</h1>
-</div>
-<div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="logo/wordmark-dark.svg">
     <img src="logo/wordmark.svg" alt="syntropy" width="360" />
