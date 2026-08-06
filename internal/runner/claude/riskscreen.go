@@ -7,13 +7,18 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
-// Risk-screen verdict tiers. See ScreenComment.
+// Risk-screen verdict tiers. Aliased from the runner package, which owns the
+// tiers as part of the runner.CommentScreener contract every runner's
+// screening call must honour — not redefined here, so this package can't
+// drift from the contract. See ScreenComment.
 const (
-	VerdictSafe       = "safe"
-	VerdictSuspicious = "suspicious"
-	VerdictDangerous  = "dangerous"
+	VerdictSafe       = runner.VerdictSafe
+	VerdictSuspicious = runner.VerdictSuspicious
+	VerdictDangerous  = runner.VerdictDangerous
 )
 
 // ScreenComment classifies a non-author reviewer comment's intent using a
@@ -38,6 +43,22 @@ const (
 // attempt has failed does it fail closed: verdict is VerdictDangerous and
 // err is non-nil, so a caller that treats "dangerous" as "route to a human"
 // never accidentally lets an unscreened comment through as safe.
+// Verify Runner satisfies runner.CommentScreener at compile time.
+var _ runner.CommentScreener = (*Runner)(nil)
+
+// ScreenComment implements runner.CommentScreener for Runner, using c.Binary
+// as the claude binary to invoke. See the package-level ScreenComment for the
+// actual screening logic; this method just supplies the Runner's configured
+// binary so callers holding a runner.Runner can type-assert to
+// runner.CommentScreener without reaching into claude-specific fields.
+func (c *Runner) ScreenComment(ctx context.Context, body string) (verdict, reason string, err error) {
+	binary := c.Binary
+	if binary == "" {
+		binary = "claude"
+	}
+	return ScreenComment(ctx, binary, body)
+}
+
 func ScreenComment(ctx context.Context, binary, body string) (verdict, reason string, err error) {
 	if binary == "" {
 		binary = "claude"

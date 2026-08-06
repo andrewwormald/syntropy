@@ -42,6 +42,34 @@ type Runner interface {
 	Run(ctx context.Context, req Request) (Response, error)
 }
 
+// Risk-screen verdict tiers returned by CommentScreener.ScreenComment. Defined
+// here, not in a specific runner implementation, so the tiers are part of the
+// contract every runner's screening call must honour rather than an artefact
+// of how one particular model happens to respond.
+const (
+	VerdictSafe       = "safe"
+	VerdictSuspicious = "suspicious"
+	VerdictDangerous  = "dangerous"
+)
+
+// CommentScreener is implemented by runners that can cheaply classify a
+// non-author reviewer comment's intent — prompt injection, destructive
+// instructions, or an ordinary review request — before the comment body ever
+// reaches Run and the worktree it operates on. Kept as a separate, optional
+// interface (rather than folded into Runner) since not every runner
+// implementation may offer a cheap, tool-free classification call; callers
+// should type-assert a Runner to CommentScreener and skip screening if it
+// doesn't implement it.
+//
+// On success, verdict is one of VerdictSafe, VerdictSuspicious,
+// VerdictDangerous and reason is a short justification. Implementations must
+// fail closed: if the classification call itself fails or its response can't
+// be parsed into a recognised tier, they must return VerdictDangerous with a
+// non-nil err rather than defaulting to VerdictSafe.
+type CommentScreener interface {
+	ScreenComment(ctx context.Context, body string) (verdict, reason string, err error)
+}
+
 // Request is what the workflow hands a runner per invocation. Bounded by
 // design: only this unit's scope, not the whole refactor's history.
 type Request struct {

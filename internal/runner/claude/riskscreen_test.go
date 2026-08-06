@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
 // writeFakeClaudeScreen writes a fake `claude` binary that always prints the
@@ -185,6 +187,25 @@ exit 1
 	}
 	if strings.TrimSpace(string(got)) != "3" {
 		t.Errorf("attempts: want exactly 3, got %q", strings.TrimSpace(string(got)))
+	}
+}
+
+// TestRunner_ScreenComment_SatisfiesCommentScreener drives the screening
+// call through the Runner method (not the package-level function) via a
+// runner.CommentScreener interface value, confirming *Runner fulfils the
+// contract callers actually depend on.
+func TestRunner_ScreenComment_SatisfiesCommentScreener(t *testing.T) {
+	bin := writeFakeClaudeScreen(t, `<risk-verdict>safe: ordinary review comment</risk-verdict>`)
+	var screener runner.CommentScreener = &Runner{Binary: bin}
+	verdict, reason, err := screener.ScreenComment(context.Background(), "please rename this variable")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != runner.VerdictSafe {
+		t.Errorf("verdict: want safe, got %q", verdict)
+	}
+	if !strings.Contains(reason, "ordinary review comment") {
+		t.Errorf("reason not extracted: %q", reason)
 	}
 }
 
