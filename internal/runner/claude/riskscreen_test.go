@@ -67,15 +67,17 @@ func TestScreenComment_Dangerous(t *testing.T) {
 
 // TestScreenComment_MalformedResponse_FailsClosed guards the security
 // property this screen exists for: if the model's response can't be parsed
-// into a recognised verdict tier, ScreenComment must not default to "safe".
+// into a recognised verdict tier, ScreenComment must not default to "safe",
+// and must not claim VerdictDangerous either since no verdict was actually
+// reached — it should report VerdictUndetermined instead.
 func TestScreenComment_MalformedResponse_FailsClosed(t *testing.T) {
 	bin := writeFakeClaudeScreen(t, `I refuse to classify this.`)
 	verdict, reason, err := ScreenComment(context.Background(), bin, "some comment")
 	if err == nil {
 		t.Fatal("want an error for a malformed response")
 	}
-	if verdict != VerdictDangerous {
-		t.Errorf("verdict: want dangerous (fail closed), got %q", verdict)
+	if verdict != VerdictUndetermined {
+		t.Errorf("verdict: want undetermined (fail closed), got %q", verdict)
 	}
 	if reason == "" {
 		t.Errorf("reason should explain the fail-closed decision")
@@ -90,13 +92,15 @@ func TestScreenComment_UnknownTier_FailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error for an unrecognised tier")
 	}
-	if verdict != VerdictDangerous {
-		t.Errorf("verdict: want dangerous (fail closed), got %q", verdict)
+	if verdict != VerdictUndetermined {
+		t.Errorf("verdict: want undetermined (fail closed), got %q", verdict)
 	}
 }
 
 // TestScreenComment_SubprocessError_FailsClosed covers the exec-level
-// failure path (non-zero exit, binary not found, etc).
+// failure path (non-zero exit, binary not found, agent unreachable, etc) —
+// cases where we never got a response at all, so the verdict must be
+// VerdictUndetermined rather than VerdictDangerous.
 func TestScreenComment_SubprocessError_FailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	fakeBinary := filepath.Join(dir, "fake-claude.sh")
@@ -108,8 +112,8 @@ func TestScreenComment_SubprocessError_FailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when the subprocess fails")
 	}
-	if verdict != VerdictDangerous {
-		t.Errorf("verdict: want dangerous (fail closed), got %q", verdict)
+	if verdict != VerdictUndetermined {
+		t.Errorf("verdict: want undetermined (fail closed), got %q", verdict)
 	}
 }
 
@@ -158,7 +162,8 @@ printf '%%s' '%s'
 
 // TestScreenComment_ExhaustsRetriesBeforeFailingClosed asserts that a
 // persistently failing screen call is retried exactly maxScreenAttempts
-// times, and only then fails closed to VerdictDangerous.
+// times, and only then fails closed to VerdictUndetermined — we never
+// reached a verdict, so this must not be reported as VerdictDangerous.
 func TestScreenComment_ExhaustsRetriesBeforeFailingClosed(t *testing.T) {
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "attempts")
@@ -177,8 +182,8 @@ exit 1
 	if err == nil {
 		t.Fatal("want an error once all retries are exhausted")
 	}
-	if verdict != VerdictDangerous {
-		t.Errorf("verdict: want dangerous (fail closed), got %q", verdict)
+	if verdict != VerdictUndetermined {
+		t.Errorf("verdict: want undetermined (fail closed), got %q", verdict)
 	}
 
 	got, err := os.ReadFile(counter)

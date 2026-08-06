@@ -16,9 +16,10 @@ import (
 // screening call must honour — not redefined here, so this package can't
 // drift from the contract. See ScreenComment.
 const (
-	VerdictSafe       = runner.VerdictSafe
-	VerdictSuspicious = runner.VerdictSuspicious
-	VerdictDangerous  = runner.VerdictDangerous
+	VerdictSafe         = runner.VerdictSafe
+	VerdictSuspicious   = runner.VerdictSuspicious
+	VerdictDangerous    = runner.VerdictDangerous
+	VerdictUndetermined = runner.VerdictUndetermined
 )
 
 // ScreenComment classifies a non-author reviewer comment's intent using a
@@ -34,15 +35,20 @@ const (
 // On success, verdict is one of VerdictSafe, VerdictSuspicious,
 // VerdictDangerous and reason is the model's one-line justification.
 //
-// If a single attempt fails (the subprocess errors, or its response can't
-// be parsed into a recognised verdict), ScreenComment retries up to
+// If a single attempt fails (the subprocess errors — e.g. the agent binary
+// can't be reached, or it runs out of tokens — or its response can't be
+// parsed into a recognised verdict), ScreenComment retries up to
 // maxScreenAttempts times: a failure here means we got no response from the
 // screening call, and if we can't get a response from that cheap call,
 // we're not going to get a usable one from the actual work-doing agent
 // either, so it's worth a few attempts before giving up. Only once every
-// attempt has failed does it fail closed: verdict is VerdictDangerous and
-// err is non-nil, so a caller that treats "dangerous" as "route to a human"
-// never accidentally lets an unscreened comment through as safe.
+// attempt has failed does it fail closed: verdict is VerdictUndetermined and
+// err is non-nil. This is deliberately distinct from VerdictDangerous, which
+// means a response was actually parsed and judged dangerous — a caller
+// should not report "we couldn't get a screening response" as if the
+// comment had been positively identified as malicious. Callers should still
+// treat VerdictUndetermined as non-safe (e.g. route to a human) rather than
+// letting an unscreened comment through.
 // Verify Runner satisfies runner.CommentScreener at compile time.
 var _ runner.CommentScreener = (*Runner)(nil)
 
@@ -73,12 +79,12 @@ func ScreenComment(ctx context.Context, binary, body string) (verdict, reason st
 		lastErr = attemptErr
 	}
 
-	return VerdictDangerous, fmt.Sprintf("risk screen got no usable response after %d attempts; failing closed to dangerous", maxScreenAttempts),
+	return VerdictUndetermined, fmt.Sprintf("risk screen got no usable response after %d attempts; failing closed to undetermined", maxScreenAttempts),
 		fmt.Errorf("claude risk screen: exhausted %d attempts: %w", maxScreenAttempts, lastErr)
 }
 
 // maxScreenAttempts caps how many times ScreenComment retries a failed
-// screening call before failing closed to VerdictDangerous.
+// screening call before failing closed to VerdictUndetermined.
 const maxScreenAttempts = 3
 
 // attemptScreenComment runs a single risk-screen invocation and parses its

@@ -50,6 +50,14 @@ const (
 	VerdictSafe       = "safe"
 	VerdictSuspicious = "suspicious"
 	VerdictDangerous  = "dangerous"
+
+	// VerdictUndetermined is returned when the screening call couldn't
+	// produce a usable response at all — the agent was unreachable, ran
+	// out of tokens, or otherwise never returned a classifiable answer.
+	// It is distinct from VerdictDangerous, which means a response was
+	// actually parsed and judged dangerous: callers should not conflate
+	// "we don't know" with "we know this is bad".
+	VerdictUndetermined = "undetermined"
 )
 
 // CommentScreener is implemented by runners that can cheaply classify a
@@ -63,9 +71,12 @@ const (
 //
 // On success, verdict is one of VerdictSafe, VerdictSuspicious,
 // VerdictDangerous and reason is a short justification. Implementations must
-// fail closed: if the classification call itself fails or its response can't
-// be parsed into a recognised tier, they must return VerdictDangerous with a
-// non-nil err rather than defaulting to VerdictSafe.
+// fail closed: if the classification call itself never produced a usable
+// response — the agent was unreachable, ran out of tokens, or its output
+// couldn't be parsed into a recognised tier — they must return
+// VerdictUndetermined with a non-nil err rather than defaulting to
+// VerdictSafe or claiming VerdictDangerous for a verdict that was never
+// actually reached.
 type CommentScreener interface {
 	ScreenComment(ctx context.Context, body string) (verdict, reason string, err error)
 }
