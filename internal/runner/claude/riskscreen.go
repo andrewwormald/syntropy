@@ -29,35 +29,58 @@ const (
 // On success, verdict is one of VerdictSafe, VerdictSuspicious,
 // VerdictDangerous and reason is the model's one-line justification.
 //
-// Any failure (the subprocess errors, or its response can't be parsed into
-// a recognised verdict) fails closed: verdict is VerdictDangerous and err
-// is non-nil, so a caller that treats "dangerous" as "route to a human"
+// If a single attempt fails (the subprocess errors, or its response can't
+// be parsed into a recognised verdict), ScreenComment retries up to
+// maxScreenAttempts times: a failure here means we got no response from the
+// screening call, and if we can't get a response from that cheap call,
+// we're not going to get a usable one from the actual work-doing agent
+// either, so it's worth a few attempts before giving up. Only once every
+// attempt has failed does it fail closed: verdict is VerdictDangerous and
+// err is non-nil, so a caller that treats "dangerous" as "route to a human"
 // never accidentally lets an unscreened comment through as safe.
 func ScreenComment(ctx context.Context, binary, body string) (verdict, reason string, err error) {
 	if binary == "" {
 		binary = "claude"
 	}
 
+	var lastErr error
+	for attempt := 1; attempt <= maxScreenAttempts; attempt++ {
+		v, r, attemptErr := attemptScreenComment(ctx, binary, body)
+		if attemptErr == nil {
+			return v, r, nil
+		}
+		lastErr = attemptErr
+	}
+
+	return VerdictDangerous, fmt.Sprintf("risk screen got no usable response after %d attempts; failing closed to dangerous", maxScreenAttempts),
+		fmt.Errorf("claude risk screen: exhausted %d attempts: %w", maxScreenAttempts, lastErr)
+}
+
+// maxScreenAttempts caps how many times ScreenComment retries a failed
+// screening call before failing closed to VerdictDangerous.
+const maxScreenAttempts = 3
+
+// attemptScreenComment runs a single risk-screen invocation and parses its
+// response. Any failure (exec error or unparseable/unrecognised response)
+// returns a non-nil error so ScreenComment can retry.
+func attemptScreenComment(ctx context.Context, binary, body string) (verdict, reason string, err error) {
 	cmd := newScreenCmd(ctx, binary, body)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if runErr := cmd.Run(); runErr != nil {
-		return VerdictDangerous, "risk screen invocation failed; failing closed to dangerous",
-			fmt.Errorf("claude risk screen exec: %w (stderr: %s)", runErr, strings.TrimSpace(stderr.String()))
+		return "", "", fmt.Errorf("claude risk screen exec: %w (stderr: %s)", runErr, strings.TrimSpace(stderr.String()))
 	}
 
 	resultText, _, ok := parseJSONOutput(stdout.String())
 	if !ok {
-		return VerdictDangerous, "risk screen returned an unparseable response; failing closed to dangerous",
-			fmt.Errorf("claude risk screen: could not parse --output-format json envelope")
+		return "", "", fmt.Errorf("claude risk screen: could not parse --output-format json envelope")
 	}
 
 	v, r, ok := parseRiskVerdict(resultText)
 	if !ok {
-		return VerdictDangerous, "risk screen returned no recognisable verdict; failing closed to dangerous",
-			fmt.Errorf("claude risk screen: no <risk-verdict> marker in response")
+		return "", "", fmt.Errorf("claude risk screen: no <risk-verdict> marker in response")
 	}
 	return v, r, nil
 }

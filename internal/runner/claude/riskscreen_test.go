@@ -111,6 +111,83 @@ func TestScreenComment_SubprocessError_FailsClosed(t *testing.T) {
 	}
 }
 
+// TestScreenComment_RetriesBeforeFailingClosed covers the retry behaviour:
+// a comment should not have to be a failing agent's fault fully three times
+// in a row before we give up. This fake binary fails on its first two
+// invocations and succeeds on the third, using a counter file since each
+// invocation is a fresh process.
+func TestScreenComment_RetriesBeforeFailingClosed(t *testing.T) {
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "attempts")
+	fakeBinary := filepath.Join(dir, "fake-claude.sh")
+	envelope := `{"type":"result","is_error":false,"result":"<risk-verdict>safe: fine on the third try</risk-verdict>"}`
+	script := fmt.Sprintf(`#!/bin/sh
+n=$(cat %q 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > %q
+if [ "$n" -lt 3 ]; then
+  exit 1
+fi
+printf '%%s' '%s'
+`, counter, counter, envelope)
+	if err := os.WriteFile(fakeBinary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	verdict, reason, err := ScreenComment(context.Background(), fakeBinary, "some comment")
+	if err != nil {
+		t.Fatalf("unexpected error after retries: %v", err)
+	}
+	if verdict != VerdictSafe {
+		t.Errorf("verdict: want safe, got %q", verdict)
+	}
+	if !strings.Contains(reason, "third try") {
+		t.Errorf("reason not extracted: %q", reason)
+	}
+
+	got, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("read attempt counter: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "3" {
+		t.Errorf("attempts: want 3, got %q", strings.TrimSpace(string(got)))
+	}
+}
+
+// TestScreenComment_ExhaustsRetriesBeforeFailingClosed asserts that a
+// persistently failing screen call is retried exactly maxScreenAttempts
+// times, and only then fails closed to VerdictDangerous.
+func TestScreenComment_ExhaustsRetriesBeforeFailingClosed(t *testing.T) {
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "attempts")
+	fakeBinary := filepath.Join(dir, "fake-claude.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+n=$(cat %q 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > %q
+exit 1
+`, counter, counter)
+	if err := os.WriteFile(fakeBinary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	verdict, _, err := ScreenComment(context.Background(), fakeBinary, "some comment")
+	if err == nil {
+		t.Fatal("want an error once all retries are exhausted")
+	}
+	if verdict != VerdictDangerous {
+		t.Errorf("verdict: want dangerous (fail closed), got %q", verdict)
+	}
+
+	got, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("read attempt counter: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "3" {
+		t.Errorf("attempts: want exactly 3, got %q", strings.TrimSpace(string(got)))
+	}
+}
+
 // TestNewScreenCmd_NeverSetsWorktreeDirOrBypassFlag is the explicit
 // assertion the increment calls for: the risk-screen invocation must never
 // set cmd.Dir (it must not run inside the target worktree) and must never
