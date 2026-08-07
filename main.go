@@ -63,6 +63,7 @@ var commands = map[string]command{
 	"daemon":  {usage: "run the long-lived daemon", run: cmdDaemon},
 	"start":   {usage: "trigger a new refactor sweep Run", run: cmdStart},
 	"status":  {usage: "show progress for a Run (or list all Runs)", run: cmdStatus},
+	"wait":    {usage: "block (token-free, local polling) until a Run reaches its first real checkpoint", run: cmdWait},
 	"list":    {usage: "list active and completed Runs", run: cmdList},
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
@@ -115,7 +116,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "syntropy — bulk-refactor sweep daemon\n\nusage: syntropy <command> [flags]\n\ncommands:\n")
-	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "setup", "config", "version"} {
+	for _, name := range []string{"daemon", "start", "status", "wait", "list", "abandon", "resume", "phrases", "setup", "config", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
 	fmt.Fprintf(w, "\nrun `syntropy <command> -h` for command-specific flags.\n")
@@ -1234,6 +1235,107 @@ func printRunStatus(w io.Writer, s runStatusResponse) {
 			fmt.Fprintf(w, "  [%-18s] %-16s tokens=%-6d %q\n", t.Phase, unit, t.Tokens, t.Summary)
 		}
 	}
+}
+
+// cmdWait blocks until a triggered Run reaches its first real checkpoint —
+// the point at which there's actually something to look at (a unit opened,
+// completed, or blacklisted; or the Run reached a state that needs human
+// attention). It's meant to replace the fire-and-forget pattern of
+// `syntropy start` immediately handing control back with nothing to show:
+// callers (notably the Skill) can call `wait` right after triggering and
+// then report something concrete instead of a bare Run ID.
+//
+// Polling is local only — status reads (daemon HTTP, or a direct sqlite
+// read when the daemon is unreachable) rather than tokens — so this is safe
+// to call without burning budget.
+func cmdWait(args []string) error {
+	fs := flag.NewFlagSet("wait", flag.ExitOnError)
+	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	storePath := fs.String("store", "", "path to sqlite store; used when the daemon is unreachable (default: ~/.syntropy/store.db if it exists)")
+	timeout := fs.Duration("timeout", 10*time.Minute, "give up and exit non-zero if no checkpoint is reached within this long")
+	interval := fs.Duration("interval", 3*time.Second, "local poll interval (no tokens spent; just a status read)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	runID := fs.Arg(0)
+	if runID == "" {
+		return errors.New("usage: syntropy wait <run-id>")
+	}
+	if *interval <= 0 {
+		return errors.New("--interval must be positive")
+	}
+
+	deadline := time.Now().Add(*timeout)
+	for {
+		s, err := fetchRunStatus(*daemonURL, *storePath, runID)
+		if err != nil {
+			return err
+		}
+		if reachedFirstCheckpoint(s) {
+			printRunStatus(os.Stdout, s)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for run %s to reach its first checkpoint (still %s)", *timeout, s.RunID, s.Status)
+		}
+		time.Sleep(*interval)
+	}
+}
+
+// reachedFirstCheckpoint reports whether s reflects a Run that has moved
+// past pure setup (Initiated/Discovering with nothing to show yet) — either
+// because a unit has actually landed somewhere (in flight, completed, or
+// blacklisted), or because the Run reached a state that needs human
+// attention (paused, awaiting a merge, or finished one way or another).
+func reachedFirstCheckpoint(s runStatusResponse) bool {
+	if s.InFlight > 0 || s.Completed > 0 || s.Blacklisted > 0 {
+		return true
+	}
+	checkpointStatuses := []string{
+		refactorsweep.StatusAwaitingMerge.String(),
+		refactorsweep.StatusPaused.String(),
+		refactorsweep.StatusAwaitingAbandonConfirm.String(),
+		refactorsweep.StatusCompleted.String(),
+		refactorsweep.StatusFailed.String(),
+		refactorsweep.StatusCancelled.String(),
+	}
+	for _, cs := range checkpointStatuses {
+		if strings.HasPrefix(s.Status, cs) {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchRunStatus resolves runID (which may be a prefix) and returns its
+// current status, preferring the daemon and falling back to a direct sqlite
+// read when the daemon is unreachable — the same fallback cmdStatus uses.
+func fetchRunStatus(daemonURL, storePath, runID string) (runStatusResponse, error) {
+	s, err := daemonStatusFor(daemonURL, runID)
+	if err == nil {
+		return s, nil
+	}
+	if !isDaemonUnreachable(err) {
+		return runStatusResponse{}, err
+	}
+	fallback, ok := tryStoreFallback(storePath)
+	if !ok {
+		return runStatusResponse{}, daemonUnreachableError(daemonURL, err)
+	}
+	ctx := context.Background()
+	rs, _, err := store.Open(fallback)
+	if err != nil {
+		return runStatusResponse{}, fmt.Errorf("open store %s: %w", fallback, err)
+	}
+	full, err := resolveRunIDFromStore(ctx, rs, runID)
+	if err != nil {
+		return runStatusResponse{}, err
+	}
+	rec, err := rs.Lookup(ctx, full)
+	if err != nil {
+		return runStatusResponse{}, fmt.Errorf("run %s not found: %w", full, err)
+	}
+	return recordToStatus(rec)
 }
 
 func cmdList(args []string) error {
