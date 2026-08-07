@@ -56,6 +56,34 @@ Two places in this flow rely on this principle:
   repo has a spec tool configured, that tool's own flow already owns
   presenting and reviewing the spec, so don't duplicate it here.
 
+## Writing style
+
+Write every spec, and any other prose you write on the user's behalf during
+this flow, in ASD-STE100 (Simplified Technical English). This applies to
+spec documents, unit descriptions, MR/PR titles and descriptions, and
+status updates you post back to the user — not to code, commands, paths,
+or identifiers, which stay verbatim.
+
+- **One idea per sentence.** Split any sentence joined by "and", "but",
+  "which", or a comma into separate sentences.
+- **Active voice only.** Write "the daemon opens the MR," not "the MR is
+  opened by the daemon."
+- **Present tense.** Describe behavior as it happens now.
+- **One instruction per step.** In numbered steps, put exactly one action
+  per item.
+- **No ambiguous pronouns.** Repeat the noun instead of "it," "this," or
+  "that" when the referent could be unclear.
+- **Controlled, consistent vocabulary.** Pick one term per concept and
+  reuse it. Do not vary between synonyms for the same thing.
+- **No noun clusters.** Break up strings of more than two or three nouns
+  stacked together.
+- **Short sentences.** Aim for roughly 20 words or fewer per sentence.
+- **Say what must happen, plainly.** Use "must" for requirements and "do
+  not" for prohibitions, not hedged language.
+- **Keep technical literals verbatim.** File paths, flags, commands, exit
+  codes, and identifiers are exempt from the vocabulary and sentence-length
+  rules — quote them exactly.
+
 ## Basic flow
 
 1. **Run `syntropy config check --repo <base_repo>` before writing
