@@ -2700,7 +2700,7 @@ func TestResume_MRMerged_CrossTalk_StaysPausedWhenNoMatchingUnit(t *testing.T) {
 
 // TestResume_CommentAfterMerge_DroppedWithoutInvokingRunner reproduces the
 // incident scenario: a reviewer comment lands on an MR that was already
-// merged (and thus already removed from InFlight). unitForMR can no longer
+// merged (and thus already removed from InFlight). UnitForMR can no longer
 // match it to a unit, so it must be dropped like cross-talk from an unknown
 // MR rather than dispatched to the runner.
 func TestResume_CommentAfterMerge_DroppedWithoutInvokingRunner(t *testing.T) {
