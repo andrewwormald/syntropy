@@ -60,9 +60,10 @@ Two places in this flow rely on this principle:
 
 Write every spec, and any other prose you write on the user's behalf during
 this flow, in ASD-STE100 (Simplified Technical English). This applies to
-spec documents, unit descriptions, MR/PR titles and descriptions, and
-status updates you post back to the user — not to code, commands, paths,
-or identifiers, which stay verbatim.
+spec documents, unit descriptions, MR/PR titles and descriptions, status
+updates you post back to the user, bot reply comments the daemon does not
+hardcode, and future edits to this Skill file — not to code, commands,
+paths, or identifiers, which stay verbatim.
 
 - **One idea per sentence.** Split any sentence joined by "and", "but",
   "which", or a comma into separate sentences.
@@ -83,6 +84,10 @@ or identifiers, which stay verbatim.
 - **Keep technical literals verbatim.** File paths, flags, commands, exit
   codes, and identifiers are exempt from the vocabulary and sentence-length
   rules — quote them exactly.
+
+These rules do not apply to two exceptions: a direct quote of the user's
+own words, and existing `decisions/*.md` ADR files — do not rewrite an
+ADR to conform to this style after the fact.
 
 ## Basic flow
 
