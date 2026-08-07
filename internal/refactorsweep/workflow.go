@@ -1370,6 +1370,24 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	var phase Phase
 	switch ev.Kind {
 	case provider.EventNoteAdded:
+		// Screen non-author reviewer comments for prompt-injection/destructive
+		// intent before the body ever reaches the runner. Author comments are
+		// trusted (the author already has full write access to the branch)
+		// and skipped. Screening is best-effort in the sense that a runner
+		// without CommentScreener support (no cheap classification call)
+		// simply isn't gated — see runner.CommentScreener's doc comment.
+		if !ev.IsAuthor {
+			if screener, ok := rn.(runner.CommentScreener); ok {
+				verdict, reason, sErr := screener.ScreenComment(ctx, ev.Note.Body)
+				if sErr != nil || verdict != runner.VerdictSafe {
+					mr := r.Object.InFlight[unitID]
+					r.Object.PauseReason = fmt.Sprintf("comment risk-screen verdict %q for %s: %s", verdict, ev.Kind, reason)
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("⚠️ Paused — this comment was flagged by the risk screen (%s): %s\n\nReply `/syntropy retry` after addressing this.", verdict, reason))
+					return StatusPaused, nil
+				}
+			}
+		}
 		req.CommentBody = ev.Note.Body
 		req.CommenterIsAuthor = ev.IsAuthor
 		req.SkillCommand = fmt.Sprintf("/syntropy-address-comment %s", unitID)
