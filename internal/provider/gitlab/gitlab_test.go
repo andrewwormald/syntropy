@@ -572,6 +572,42 @@ func TestDo_401_NoRetryWithoutTokenSource(t *testing.T) {
 	}
 }
 
+func TestGetMR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/projects/owner/repo/merge_requests/42" {
+			t.Errorf("path: got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"source_branch":"feature-x","web_url":"https://gitlab.example/owner/repo/-/merge_requests/42","state":"opened"}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMR(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMR: %v", err)
+	}
+	want := provider.MR{
+		ProjectID: "owner/repo",
+		IID:       42,
+		URL:       "https://gitlab.example/owner/repo/-/merge_requests/42",
+		Branch:    "feature-x",
+		State:     "opened",
+	}
+	if got != want {
+		t.Errorf("GetMR: got %+v, want %+v", got, want)
+	}
+}
+
+func TestGetMR_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if _, err := p.GetMR(t.Context(), "owner/repo", 42); err == nil {
+		t.Fatal("want error on 404, got nil")
+	}
+}
+
 func TestGetMRState_NoConflict(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"state":"opened","has_conflicts":false}`))
