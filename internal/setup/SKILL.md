@@ -147,10 +147,15 @@ Two places in this flow rely on this principle:
    returns immediately with a bare Run ID, which isn't useful to report on
    its own. `wait` blocks locally (no agent invocation, no token cost)
    until a unit actually lands or the Run needs attention, so call it
-   right after `start` instead of firing-and-forgetting:
+   right after `start` instead of firing-and-forgetting. `wait` can take
+   minutes, so run it as a **backgrounded shell call** rather than a
+   blocking foreground one — that frees you to keep working (or hand
+   control back to the human) this turn, and you get notified once the
+   wait resolves. Report the outcome (unit landed, pause reason,
+   completion, or timeout) in that follow-up turn, not this one:
    ```bash
    syntropy start --spec path/to/your.spec.md
-   syntropy wait <run-id>
+   syntropy wait <run-id>   # run this in the background, don't block on it
    ```
 6. **Check progress** any time afterward with:
    ```bash
