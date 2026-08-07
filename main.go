@@ -1434,6 +1434,54 @@ func resolveRunIDFromStore(ctx context.Context, rs workflow.RecordStore, prefix 
 	return resolveRunIDPrefix(ids, prefix)
 }
 
+// trackedMR identifies the Run and unit that already has projectID/mrIID
+// checked out as an in-flight MR.
+type trackedMR struct {
+	RunID  string
+	UnitID string
+}
+
+// findRunTrackingMR scans every non-terminal Run in the store for one whose
+// InFlight already contains projectID/mrIID, reusing the same
+// unitForMR match `syntropy adopt` will need before it can refuse
+// re-adopting an MR that's still under live tracking elsewhere, rather than
+// starting a second, conflicting Run against the same branch.
+//
+// Terminal Runs (RunState.Finished() — Completed/Failed/Cancelled) are
+// skipped: their InFlight maps are stale by definition, the same filter
+// rehydrateSecrets/isActiveStatus apply and for the same reason.
+func findRunTrackingMR(ctx context.Context, rs workflow.RecordStore, projectID string, mrIID int) (trackedMR, bool, error) {
+	const pageSize = 200
+	var offset int64
+	for {
+		records, err := rs.List(ctx, workflowName, offset, pageSize, workflow.OrderTypeAscending)
+		if err != nil {
+			return trackedMR{}, false, fmt.Errorf("list records at offset %d: %w", offset, err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		for _, rec := range records {
+			if rec.RunState.Finished() {
+				continue
+			}
+			var state refactorsweep.AgentState
+			if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+				continue
+			}
+			target := provider.MR{ProjectID: projectID, IID: mrIID}
+			if unitID := refactorsweep.UnitForMR(state.InFlight, target); unitID != "" {
+				return trackedMR{RunID: rec.RunID, UnitID: unitID}, true, nil
+			}
+		}
+		if int64(len(records)) < pageSize {
+			break
+		}
+		offset += int64(len(records))
+	}
+	return trackedMR{}, false, nil
+}
+
 // resolveRunIDFromDaemon resolves a prefix by fetching /status from the daemon
 // and filtering. Transport-level errors are returned unwrapped so callers can
 // detect them via isDaemonUnreachable.

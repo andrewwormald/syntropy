@@ -20,6 +20,7 @@ import (
 
 	"github.com/andrewwormald/syntropy/internal/config"
 	"github.com/andrewwormald/syntropy/internal/eventstream"
+	"github.com/andrewwormald/syntropy/internal/provider"
 	"github.com/andrewwormald/syntropy/internal/refactorsweep"
 	"github.com/andrewwormald/syntropy/internal/runner"
 	"github.com/andrewwormald/syntropy/internal/store"
@@ -256,6 +257,106 @@ func TestDirectList(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindRunTrackingMR(t *testing.T) {
+	trackedMRVal := provider.MR{ProjectID: "grp/proj", IID: 42}
+
+	seedRun := func(rs workflow.RecordStore, runID string, runState workflow.RunState, inFlight map[string]provider.MR) {
+		state := refactorsweep.AgentState{Goal: "seed", InFlight: inFlight}
+		obj, err := workflow.Marshal(&state)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		rec := &workflow.Record{
+			WorkflowName: workflowName,
+			ForeignID:    "fid-" + runID,
+			RunID:        runID,
+			RunState:     runState,
+			Status:       int(refactorsweep.StatusWorking),
+			Object:       obj,
+			UpdatedAt:    time.Now(),
+		}
+		if err := rs.Store(context.Background(), rec); err != nil {
+			t.Fatalf("store.Store: %v", err)
+		}
+	}
+
+	t.Run("found in an active run", func(t *testing.T) {
+		sp := filepath.Join(t.TempDir(), "store.db")
+		rs, _, err := store.Open(sp)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		seedRun(rs, "aaaaaaaa-1111-0000-0000-000000000001", workflow.RunStateRunning, map[string]provider.MR{
+			"unit-1": trackedMRVal,
+		})
+
+		got, found, err := findRunTrackingMR(context.Background(), rs, trackedMRVal.ProjectID, trackedMRVal.IID)
+		if err != nil {
+			t.Fatalf("findRunTrackingMR: %v", err)
+		}
+		if !found {
+			t.Fatalf("expected found=true")
+		}
+		if got.RunID != "aaaaaaaa-1111-0000-0000-000000000001" || got.UnitID != "unit-1" {
+			t.Errorf("got %+v", got)
+		}
+	})
+
+	t.Run("skips terminal runs", func(t *testing.T) {
+		sp := filepath.Join(t.TempDir(), "store.db")
+		rs, _, err := store.Open(sp)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		seedRun(rs, "bbbbbbbb-0001-0000-0000-000000000001", workflow.RunStateCompleted, map[string]provider.MR{
+			"unit-1": trackedMRVal,
+		})
+
+		_, found, err := findRunTrackingMR(context.Background(), rs, trackedMRVal.ProjectID, trackedMRVal.IID)
+		if err != nil {
+			t.Fatalf("findRunTrackingMR: %v", err)
+		}
+		if found {
+			t.Fatalf("expected found=false for a terminal run's stale InFlight entry")
+		}
+	})
+
+	t.Run("not tracked anywhere", func(t *testing.T) {
+		sp := filepath.Join(t.TempDir(), "store.db")
+		rs, _, err := store.Open(sp)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		seedRun(rs, "cccccccc-0002-0000-0000-000000000002", workflow.RunStateRunning, map[string]provider.MR{
+			"unit-1": {ProjectID: "grp/other", IID: 7},
+		})
+
+		_, found, err := findRunTrackingMR(context.Background(), rs, trackedMRVal.ProjectID, trackedMRVal.IID)
+		if err != nil {
+			t.Fatalf("findRunTrackingMR: %v", err)
+		}
+		if found {
+			t.Fatalf("expected found=false")
+		}
+	})
+
+	t.Run("empty store", func(t *testing.T) {
+		sp := filepath.Join(t.TempDir(), "store.db")
+		rs, _, err := store.Open(sp)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+
+		_, found, err := findRunTrackingMR(context.Background(), rs, trackedMRVal.ProjectID, trackedMRVal.IID)
+		if err != nil {
+			t.Fatalf("findRunTrackingMR: %v", err)
+		}
+		if found {
+			t.Fatalf("expected found=false")
+		}
+	})
 }
 
 func TestDaemonBannerLine(t *testing.T) {

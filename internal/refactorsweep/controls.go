@@ -248,7 +248,7 @@ func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentS
 // to the next unit (or completes if nothing remains).
 func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	unitID := unitForMR(r.Object.InFlight, ev.MR)
+	unitID := UnitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
 		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			"`/syntropy skip`: this MR isn't tracked by any active syntropy Run.")
@@ -392,7 +392,7 @@ const helpMessage = "**syntropy control verbs** (author only)\n\n" +
 // cmdSkip's guard.
 func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, verb string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	unitID := unitForMR(r.Object.InFlight, ev.MR)
+	unitID := UnitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
 		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("`/syntropy %s`: this MR isn't tracked by any active syntropy Run, so there's no subagent to direct. Reply `/syntropy` for the verb list.", verb))

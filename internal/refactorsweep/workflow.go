@@ -1193,7 +1193,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// resume` — syntropy should align its own state with reality the
 	// moment it learns the truth, not wait to be told to look.
 	if ev.Kind == provider.EventMRMerged || ev.Kind == provider.EventMRClosed {
-		if unitID := unitForMR(r.Object.InFlight, ev.MR); unitID != "" {
+		if unitID := UnitForMR(r.Object.InFlight, ev.MR); unitID != "" {
 			switch ev.Kind {
 			case provider.EventMRMerged:
 				return d.markUnitMerged(ctx, r, unitID, ev.MR), nil
@@ -1219,7 +1219,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// pause. Everything else (no in-flight unit for this MR, or a non-note
 	// event) is noted (EventsSeen above) but produces no transition.
 	if r.Status == StatusPaused {
-		unitID := unitForMR(r.Object.InFlight, ev.MR)
+		unitID := UnitForMR(r.Object.InFlight, ev.MR)
 		if unitID == "" || ev.Kind != provider.EventNoteAdded {
 			return StatusPaused, nil
 		}
@@ -1235,7 +1235,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// Identify which in-flight unit this event is about. Cross-talk from
 	// other Runs sharing the project webhook (or events on MRs we no longer
 	// track) gets dropped here.
-	unitID := unitForMR(r.Object.InFlight, ev.MR)
+	unitID := UnitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
 		return StatusAwaitingMerge, nil
 	}
@@ -1916,9 +1916,9 @@ func (d *Deps) cleanupWorktree(ctx context.Context, r *workflow.Run[AgentState, 
 	_ = d.Git.RemoveWorktree(ctx, r.Object.BaseRepo, worktree)
 }
 
-// unitForMR matches an inbound MR to the unitID that owns it in InFlight.
+// UnitForMR matches an inbound MR to the unitID that owns it in InFlight.
 // Returns "" when the event is for an MR we don't track (cross-talk).
-func unitForMR(inFlight map[string]provider.MR, mr provider.MR) string {
+func UnitForMR(inFlight map[string]provider.MR, mr provider.MR) string {
 	for unitID, m := range inFlight {
 		if m.ProjectID == mr.ProjectID && m.IID == mr.IID {
 			return unitID
