@@ -26,6 +26,17 @@ type Git interface {
 	// safe to call when the worktree already exists (validates and uses it).
 	EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, branchName string) error
 
+	// CheckoutExistingBranch makes sure `dir` is a git worktree on
+	// branchName, where branchName already exists as a branch on origin
+	// (unlike EnsureBranch, which creates a new branch off origin/baseBranch).
+	// Idempotent — safe to call when the worktree already exists (validates
+	// and uses it).
+	//
+	// Used by `syntropy adopt` to re-establish tracking on an MR's branch
+	// without creating a new branch or duplicating the work already pushed
+	// to it.
+	CheckoutExistingBranch(ctx context.Context, dir, baseRepo, branchName string) error
+
 	// HardReset fetches origin/baseBranch and forces `dir` to match it,
 	// discarding any local commits or working-tree changes. Used by the
 	// planning worktree to refresh between iterations so the planner
@@ -219,6 +230,45 @@ func (g *ExecGit) EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, b
 		return g.run(ctx, baseRepo, args...)
 	}); err != nil {
 		return fmt.Errorf("EnsureBranch: worktree add: %w", err)
+	}
+	return nil
+}
+
+func (g *ExecGit) CheckoutExistingBranch(ctx context.Context, dir, baseRepo, branchName string) error {
+	// If `dir` is already a git directory, treat as idempotent.
+	if isGitDir(dir) {
+		current, err := g.currentBranch(ctx, dir)
+		if err != nil {
+			return fmt.Errorf("CheckoutExistingBranch: read current branch in %s: %w", dir, err)
+		}
+		if current != branchName {
+			return fmt.Errorf("CheckoutExistingBranch: worktree %s is on %q, want %q", dir, current, branchName)
+		}
+		return nil
+	}
+
+	// Create the parent of `dir` if it doesn't exist yet.
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return fmt.Errorf("CheckoutExistingBranch: mkdir parent: %w", err)
+	}
+
+	// Fetch the branch from origin so it's available to check out, riding
+	// out shared-refs lock contention on baseRepo the same way EnsureBranch
+	// does (see ADR-0059).
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		return g.run(ctx, baseRepo, "fetch", "origin", branchName)
+	}); err != nil {
+		return fmt.Errorf("CheckoutExistingBranch: fetch: %w", err)
+	}
+
+	// Unlike EnsureBranch's `worktree add -b`, this checks out the branch
+	// that fetch just brought in — no `-b`, so it fails rather than silently
+	// creating a new branch if branchName doesn't already exist on origin.
+	args := []string{"worktree", "add", dir, branchName}
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		return g.run(ctx, baseRepo, args...)
+	}); err != nil {
+		return fmt.Errorf("CheckoutExistingBranch: worktree add: %w", err)
 	}
 	return nil
 }

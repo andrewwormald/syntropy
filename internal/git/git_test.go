@@ -103,6 +103,94 @@ func TestExecGit_FullLifecycle(t *testing.T) {
 	}
 }
 
+// TestExecGit_CheckoutExistingBranch_ChecksOutBranchAlreadyOnOrigin exercises
+// the `syntropy adopt` scenario: a branch already exists on origin (pushed by
+// some prior, now-untracked process), and CheckoutExistingBranch should check
+// it out into a fresh worktree without creating a new branch or losing the
+// commit already on it.
+func TestExecGit_CheckoutExistingBranch_ChecksOutBranchAlreadyOnOrigin(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	// Simulate a branch that already exists on origin, with a commit of its
+	// own, but with no local Run tracking it — the "lost Run record" case.
+	runMust(t, baseRepo, "checkout", "-b", "adopt/existing-mr")
+	writeFile(t, baseRepo, "EXISTING.md", "already in flight\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "in-flight work")
+	runMust(t, baseRepo, "push", "origin", "adopt/existing-mr")
+	runMust(t, baseRepo, "checkout", "main")
+
+	g := NewExec("syntropy-test", "syntropy@test.invalid")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.CheckoutExistingBranch(ctx, worktreeDir, baseRepo, "adopt/existing-mr"); err != nil {
+		t.Fatalf("CheckoutExistingBranch: %v", err)
+	}
+
+	current, err := g.currentBranch(ctx, worktreeDir)
+	if err != nil {
+		t.Fatalf("currentBranch: %v", err)
+	}
+	if current != "adopt/existing-mr" {
+		t.Errorf("current branch = %q, want %q", current, "adopt/existing-mr")
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "EXISTING.md")); err != nil {
+		t.Errorf("expected EXISTING.md (the branch's own commit) to be present: %v", err)
+	}
+
+	// Idempotent — calling again on the same worktree is a no-op.
+	if err := g.CheckoutExistingBranch(ctx, worktreeDir, baseRepo, "adopt/existing-mr"); err != nil {
+		t.Errorf("CheckoutExistingBranch should be idempotent: %v", err)
+	}
+
+	// Calling on a worktree that's on a different branch must error.
+	if err := g.CheckoutExistingBranch(ctx, worktreeDir, baseRepo, "main"); err == nil {
+		t.Errorf("CheckoutExistingBranch should reject worktree on wrong branch")
+	}
+}
+
+// TestExecGit_CheckoutExistingBranch_UnknownBranchErrors ensures a branch
+// that doesn't exist on origin surfaces as an error rather than silently
+// creating a new branch (which is what EnsureBranch's `-b` would do).
+func TestExecGit_CheckoutExistingBranch_UnknownBranchErrors(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("syntropy-test", "syntropy@test.invalid")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.CheckoutExistingBranch(ctx, worktreeDir, baseRepo, "does/not-exist"); err == nil {
+		t.Errorf("CheckoutExistingBranch should error on a branch that doesn't exist on origin")
+	}
+}
+
 func TestExecGit_HardReset_DiscardsLocalChanges(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
