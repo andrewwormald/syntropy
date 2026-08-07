@@ -1191,3 +1191,120 @@ func TestUnsetNestedClaudeCodeEnv(t *testing.T) {
 		t.Errorf("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: want to survive unrelated, got %q", val)
 	}
 }
+
+func TestReachedFirstCheckpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		s    runStatusResponse
+		want bool
+	}{
+		{"fresh discovering, nothing yet", runStatusResponse{Status: refactorsweep.StatusDiscovering.String()}, false},
+		{"initiated, nothing yet", runStatusResponse{Status: refactorsweep.StatusInitiated.String()}, false},
+		{"working but no unit landed yet", runStatusResponse{Status: refactorsweep.StatusWorking.String()}, false},
+		{"first MR in flight", runStatusResponse{Status: refactorsweep.StatusWorking.String(), InFlight: 1}, true},
+		{"first unit completed", runStatusResponse{Status: refactorsweep.StatusDiscovering.String(), Completed: 1}, true},
+		{"first unit blacklisted", runStatusResponse{Status: refactorsweep.StatusDiscovering.String(), Blacklisted: 1}, true},
+		{"awaiting merge", runStatusResponse{Status: refactorsweep.StatusAwaitingMerge.String()}, true},
+		{"paused for author", runStatusResponse{Status: refactorsweep.StatusPaused.String()}, true},
+		{"auto-paused suffix still matches", runStatusResponse{Status: refactorsweep.StatusPaused.String() + " (auto-paused: circuit breaker)"}, true},
+		{"awaiting abandon confirm", runStatusResponse{Status: refactorsweep.StatusAwaitingAbandonConfirm.String()}, true},
+		{"completed", runStatusResponse{Status: refactorsweep.StatusCompleted.String()}, true},
+		{"failed", runStatusResponse{Status: refactorsweep.StatusFailed.String()}, true},
+		{"cancelled", runStatusResponse{Status: refactorsweep.StatusCancelled.String()}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reachedFirstCheckpoint(tt.s); got != tt.want {
+				t.Errorf("reachedFirstCheckpoint(%+v) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCmdWait_StoreFallback_ReturnsImmediatelyWhenCheckpointReached asserts
+// that `wait` returns as soon as a poll observes a checkpoint, without
+// waiting out the timeout, and that it falls back to a direct store read
+// when the daemon is unreachable (same fallback as `status`/`abandon`/
+// `resume`).
+func TestCmdWait_StoreFallback_ReturnsImmediatelyWhenCheckpointReached(t *testing.T) {
+	const unreachable = "http://127.0.0.1:9" // reserved "discard" port
+	runID := "bbbbbbbb-0000-0000-0000-000000000001"
+	state := refactorsweep.AgentState{
+		Goal: "migrate the acme/example service",
+		Completed: []refactorsweep.CompletedUnit{
+			{UnitID: "unit-1"},
+		},
+	}
+	sp := seedStore(t, runID, state)
+
+	flush := captureStdout(t)
+	start := time.Now()
+	err := cmdWait([]string{"--daemon", unreachable, "--store", sp, "--timeout", "5s", "--interval", "10ms", runID})
+	elapsed := time.Since(start)
+	out := flush()
+
+	if err != nil {
+		t.Fatalf("cmdWait: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("cmdWait took %s, want it to return promptly once the checkpoint is already present", elapsed)
+	}
+	if !strings.Contains(out, runID) {
+		t.Errorf("output missing run id %q\n\nfull output:\n%s", runID, out)
+	}
+}
+
+// TestCmdWait_TimesOutWhenNoCheckpointReached asserts that `wait` gives up
+// and returns an error once --timeout elapses for a Run stuck before any
+// checkpoint (still Discovering, nothing in flight/completed/blacklisted).
+func TestCmdWait_TimesOutWhenNoCheckpointReached(t *testing.T) {
+	const unreachable = "http://127.0.0.1:9"
+	runID := "cccccccc-0000-0000-0000-000000000001"
+	sp := seedStore(t, runID, refactorsweep.AgentState{Goal: "migrate the acme/example service"})
+
+	// seedStore always writes StatusWorking; overwrite with Discovering and
+	// no in-flight/completed/blacklisted units so no checkpoint is reached.
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	rec, err := rs.Lookup(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	rec.Status = int(refactorsweep.StatusDiscovering)
+	if err := rs.Store(context.Background(), rec); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	flush := captureStdout(t)
+	err = cmdWait([]string{"--daemon", unreachable, "--store", sp, "--timeout", "50ms", "--interval", "10ms", runID})
+	_ = flush()
+
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error; got: %v", err)
+	}
+}
+
+func TestCmdWait_MissingRunIDErrors(t *testing.T) {
+	if err := cmdWait(nil); err == nil {
+		t.Fatal("expected an error for a missing run-id argument")
+	}
+}
+
+func TestCmdWait_DaemonUnreachableNoStoreFallback_ReturnsHint(t *testing.T) {
+	const unreachable = "http://127.0.0.1:9"
+	t.Setenv("HOME", t.TempDir())
+
+	err := cmdWait([]string{"--daemon", unreachable, "--timeout", "50ms", prefixRunIDs[0]})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "is unreachable") || !strings.Contains(msg, "--store") {
+		t.Errorf("want 'is unreachable' and '--store' hint in error; got: %s", msg)
+	}
+}
