@@ -89,6 +89,14 @@ type Provider interface {
 	// ADR-0050), implementations return nil rather than an error.
 	ReactToNote(ctx context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error
 
+	// GetMR fetches a single MR/PR's current identity by IID — its source
+	// branch and lifecycle state. Unlike GetMRState (used by the poller's
+	// tight loop and deliberately minimal), this is for one-off lookups
+	// that need the branch too, e.g. `syntropy adopt` re-attaching to an
+	// already-open MR whose Run record was lost, before it can check out
+	// the branch or refuse a closed/merged MR.
+	GetMR(ctx context.Context, projectID string, mrIID int) (MR, error)
+
 	// Polling support (used when EventSource=poll instead of webhook).
 	// GetMRState returns both the lifecycle state and mergeability from the
 	// same underlying API call — HasConflict costs no extra request.
@@ -180,6 +188,10 @@ type MR struct {
 	IID       int
 	URL       string
 	Branch    string
+	// State is one of "opened" | "closed" | "merged", populated by GetMR.
+	// Zero-valued ("") for MRs returned by CreateMR — callers that need the
+	// state right after creation know it's freshly opened.
+	State string
 }
 
 // Event is the normalised inbound event everflow's state machine consumes.

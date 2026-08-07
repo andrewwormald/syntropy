@@ -185,6 +185,9 @@ func (f *fakeProvider) UpdateMRDescription(_ context.Context, projectID string, 
 	f.descriptionUpdates = append(f.descriptionUpdates, metadataUpdateCall{ProjectID: projectID, MRIID: mrIID, Value: description})
 	return f.descriptionUpdateErr
 }
+func (f *fakeProvider) GetMR(_ context.Context, _ string, _ int) (provider.MR, error) {
+	return provider.MR{}, nil
+}
 func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
 	if f.mrStateErr != nil {
 		return provider.MRState{}, f.mrStateErr

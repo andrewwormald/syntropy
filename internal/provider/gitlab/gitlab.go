@@ -265,6 +265,29 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 	return p.doJSON(ctx, http.MethodPut, path, map[string]any{"state_event": "close"}, nil)
 }
 
+// GetMR → GET /api/v4/projects/:id/merge_requests/:iid. Returns the MR's
+// source branch, URL, and lifecycle state, used by `syntropy adopt` to
+// re-attach to an already-open MR whose Run record was lost.
+func (p *Provider) GetMR(ctx context.Context, projectID string, mrIID int) (provider.MR, error) {
+	var resp struct {
+		SourceBranch string `json:"source_branch"`
+		WebURL       string `json:"web_url"`
+		State        string `json:"state"`
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
+		url.PathEscape(projectID), mrIID)
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return provider.MR{}, err
+	}
+	return provider.MR{
+		ProjectID: projectID,
+		IID:       mrIID,
+		URL:       resp.WebURL,
+		Branch:    resp.SourceBranch,
+		State:     resp.State,
+	}, nil
+}
+
 // GetMRState → GET /api/v4/projects/:id/merge_requests/:iid. Returns the
 // MR's current `state` field ("opened" | "closed" | "merged" | "locked")
 // plus `has_conflicts`, used by the poller to detect lifecycle transitions

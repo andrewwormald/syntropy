@@ -256,17 +256,54 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 	return p.doJSON(ctx, http.MethodPatch, path, map[string]any{"state": "closed"}, nil)
 }
 
-// GetMRState reads the PR's state ("open" | "closed"; merged is "closed"
-// with merged_at set). Returns the GitLab-style state vocabulary mapping
-// for callers that don't care about the merged-vs-just-closed distinction.
+// normalisePRState collapses GitHub's `state` ("open"|"closed") + `merged`
+// bool into the same three-value vocabulary GitLab returns natively
+// ("opened" | "closed" | "merged"), so callers can stay provider-agnostic.
+func normalisePRState(state string, merged bool) string {
+	switch {
+	case merged:
+		return "merged"
+	case state == "closed":
+		return "closed"
+	default:
+		return "opened"
+	}
+}
+
+// GetMR → GET /repos/{owner}/{repo}/pulls/{number}. Returns the PR's head
+// branch, URL, and lifecycle state, used by `syntropy adopt` to re-attach
+// to an already-open PR whose Run record was lost.
+func (p *Provider) GetMR(ctx context.Context, projectID string, mrIID int) (provider.MR, error) {
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return provider.MR{}, err
+	}
+	var pr struct {
+		HTMLURL string `json:"html_url"`
+		State   string `json:"state"`
+		Merged  bool   `json:"merged"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, mrIID)
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &pr); err != nil {
+		return provider.MR{}, err
+	}
+	return provider.MR{
+		ProjectID: projectID,
+		IID:       mrIID,
+		URL:       pr.HTMLURL,
+		Branch:    pr.Head.Ref,
+		State:     normalisePRState(pr.State, pr.Merged),
+	}, nil
+}
+
 // GetMRState → GET /repos/{owner}/{repo}/pulls/{number}. Returns one of
 // "opened" | "closed" | "merged" to match the poller's state-event
 // vocabulary (see internal/poller/poller.go mrStateEvent), plus whether the
 // PR has a merge conflict — from the same response, no extra request.
 //
-// GitHub's REST response has a `state` field ("open"|"closed") and a
-// separate `merged` boolean; we collapse them into the same three
-// strings GitLab returns so the poller can stay provider-agnostic.
 // `mergeable_state` is "dirty" when the PR conflicts with its base branch;
 // it's also null/absent while GitHub is still computing mergeability, which
 // we treat as "no conflict (yet)" rather than guessing.
@@ -284,16 +321,10 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &pr); err != nil {
 		return provider.MRState{}, err
 	}
-	st := provider.MRState{HasConflict: pr.MergeableState == "dirty"}
-	switch {
-	case pr.Merged:
-		st.State = "merged"
-	case pr.State == "closed":
-		st.State = "closed"
-	default:
-		st.State = "opened"
-	}
-	return st, nil
+	return provider.MRState{
+		State:       normalisePRState(pr.State, pr.Merged),
+		HasConflict: pr.MergeableState == "dirty",
+	}, nil
 }
 
 // GitHub's three comment endpoints (see ListNotesSince) each draw their

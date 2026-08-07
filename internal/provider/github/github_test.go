@@ -300,6 +300,59 @@ func TestResolveDiscussion_GraphQLError(t *testing.T) {
 	}
 }
 
+// --- GetMR ---
+
+func TestGetMR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/pulls/42" {
+			t.Errorf("path: got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"html_url":"https://github.com/owner/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature-x"}}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMR(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMR: %v", err)
+	}
+	want := provider.MR{
+		ProjectID: "owner/repo",
+		IID:       42,
+		URL:       "https://github.com/owner/repo/pull/42",
+		Branch:    "feature-x",
+		State:     "opened",
+	}
+	if got != want {
+		t.Errorf("GetMR: got %+v, want %+v", got, want)
+	}
+}
+
+func TestGetMR_Merged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"html_url":"https://github.com/owner/repo/pull/42","state":"closed","merged":true,"head":{"ref":"feature-x"}}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMR(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMR: %v", err)
+	}
+	if got.State != "merged" {
+		t.Errorf("state: want merged, got %q", got.State)
+	}
+}
+
+func TestGetMR_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if _, err := p.GetMR(t.Context(), "owner/repo", 42); err == nil {
+		t.Fatal("want error on 404, got nil")
+	}
+}
+
 // --- GetMRState ---
 
 func TestGetMRState_Open(t *testing.T) {

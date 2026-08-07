@@ -74,6 +74,9 @@ func (f *fakeAuthProvider) ReactToNote(_ context.Context, _ string, _ int, _ int
 }
 func (f *fakeAuthProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error { return nil }
 func (f *fakeAuthProvider) IsBot(_ provider.User) bool                                  { return false }
+func (f *fakeAuthProvider) GetMR(_ context.Context, _ string, _ int) (provider.MR, error) {
+	return provider.MR{}, nil
+}
 func (f *fakeAuthProvider) GetMRState(_ context.Context, _ string, _ int) (provider.MRState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
