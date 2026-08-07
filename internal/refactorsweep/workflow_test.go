@@ -340,6 +340,10 @@ func (g *fakeGit) EnsureBranch(_ context.Context, dir, baseRepo, baseBranch, bra
 	return g.ensureErr
 }
 
+func (g *fakeGit) CheckoutExistingBranch(context.Context, string, string, string) error {
+	panic("not used by refactorsweep")
+}
+
 func (g *fakeGit) HardReset(_ context.Context, dir, baseBranch string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
