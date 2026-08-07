@@ -143,11 +143,16 @@ Two places in this flow rely on this principle:
    ```bash
    syntropy daemon --commit-author "Name" --commit-email "you@example.com" &
    ```
-5. **Trigger the run:**
+5. **Trigger the run, then wait for its first checkpoint** — `start`
+   returns immediately with a bare Run ID, which isn't useful to report on
+   its own. `wait` blocks locally (no agent invocation, no token cost)
+   until a unit actually lands or the Run needs attention, so call it
+   right after `start` instead of firing-and-forgetting:
    ```bash
    syntropy start --spec path/to/your.spec.md
+   syntropy wait <run-id>
    ```
-6. **Check progress** any time with:
+6. **Check progress** any time afterward with:
    ```bash
    syntropy status <run-id>
    syntropy list
