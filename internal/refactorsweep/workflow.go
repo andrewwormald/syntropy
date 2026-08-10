@@ -358,6 +358,14 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 					return StatusFailed, fmt.Errorf("setup: adopt checkout existing branch: %w", err)
 				}
 			}
+			// Post a visible marker on the MR itself: an author watching
+			// the MR (not the CLI that ran `syntropy adopt`) has no other
+			// way to learn that live tracking just came under a new Run,
+			// e.g. after the original Run record was lost. See ADR-0109.
+			body := fmt.Sprintf("🔗 Adopted by run `%s` — live tracking (comment reactions, CI events, merge/close detection) resumes from here.", r.RunID)
+			if err := p.PostComment(ctx, mr.ProjectID, mr.IID, body); err != nil {
+				return StatusFailed, fmt.Errorf("setup: adopt post comment: %w", err)
+			}
 			return StatusAwaitingMerge, nil
 		}
 	}

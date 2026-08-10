@@ -651,6 +651,48 @@ func TestSetup_AdoptPath_SkipsDiscovering(t *testing.T) {
 	if len(g.ensures) != 0 {
 		t.Errorf("EnsureBranch should not be called on the adopt path, got %d calls", len(g.ensures))
 	}
+
+	// A visible "Adopted by" marker was posted on the MR itself, so an
+	// author watching the MR (not the CLI that ran `syntropy adopt`)
+	// learns that live tracking resumed under this Run.
+	if len(fp.comments) != 1 {
+		t.Fatalf("expected an adopted-by comment; got %d", len(fp.comments))
+	}
+	if fp.comments[0].ProjectID != "acme/example" || fp.comments[0].MRIID != 7 {
+		t.Errorf("adopted-by comment posted to wrong MR: got %+v", fp.comments[0])
+	}
+	if !strings.Contains(fp.comments[0].Body, "Adopted by run") || !strings.Contains(fp.comments[0].Body, r.RunID) {
+		t.Errorf("adopted-by comment should mention the Run ID; got %q", fp.comments[0].Body)
+	}
+}
+
+func TestSetup_AdoptPath_CommentFails(t *testing.T) {
+	fp := &fakeProvider{
+		authedUser: provider.User{ID: "42", Handle: "andreww", Email: "a@example.com"},
+		webhookID:  "wh-99",
+		commentErr: errors.New("comment: rate limited"),
+	}
+	d := newDeps(t, fp)
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		EventSource:  EventSourceWebhook,
+		CurrentUnit:  "unit-1",
+		InFlight: map[string]provider.MR{
+			"unit-1": {ProjectID: "acme/example", IID: 7, Branch: "unit-1", State: "opened"},
+		},
+	})
+
+	next, err := d.setup(t.Context(), r)
+	if err == nil {
+		t.Fatalf("want error when PostComment fails")
+	}
+	if next != StatusFailed {
+		t.Errorf("next status: want Failed, got %v", next)
+	}
+	if !strings.Contains(err.Error(), "comment: rate limited") {
+		t.Errorf("error should propagate provider error: %v", err)
+	}
 }
 
 func TestSetup_AdoptPath_CheckoutFails(t *testing.T) {

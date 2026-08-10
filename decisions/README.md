@@ -155,3 +155,4 @@ forces or unlocks.
 | 0105 | GitLab `ListNotesSince` sources from `/discussions`, not `/notes`, so inline diff comments get a `DiscussionID` | Accepted | 2026-08-05 |
 | 0107 | `syntropy wait` — token-free local poll for a Run's first checkpoint    | Accepted | 2026-08-07 |
 | 0108 | Skill-authored prose follows ASD-STE100 (Simplified Technical English)  | Accepted | 2026-08-07 |
+| 0109 | `syntropy adopt` re-establishes tracking on an existing MR, posts an "Adopted by" comment | Accepted | 2026-08-10 |
