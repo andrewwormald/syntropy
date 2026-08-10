@@ -579,6 +579,55 @@ func TestSetup_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSetup_AdoptPath_SkipsDiscovering(t *testing.T) {
+	fp := &fakeProvider{
+		authedUser: provider.User{ID: "42", Handle: "andreww", Email: "a@example.com"},
+		webhookID:  "wh-99",
+	}
+	d := newDeps(t, fp)
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		EventSource:  EventSourceWebhook,
+		CurrentUnit:  "unit-1",
+		InFlight: map[string]provider.MR{
+			"unit-1": {ProjectID: "acme/example", IID: 7, Branch: "unit-1", State: "opened"},
+		},
+	})
+
+	next, err := d.setup(t.Context(), r)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("next status: want AwaitingMerge, got %v", next)
+	}
+
+	// Webhook registration still happened, exactly as for a normal Run.
+	if r.Object.WebhookID != "wh-99" {
+		t.Errorf("WebhookID: want wh-99, got %q", r.Object.WebhookID)
+	}
+	if fp.registered.ProjectID != "acme/example" {
+		t.Errorf("RegisterWebhook ProjectID: want acme/example, got %q", fp.registered.ProjectID)
+	}
+
+	// Per-Run dir still created.
+	runDir := filepath.Join(d.RunsRoot, r.RunID)
+	if info, err := os.Stat(runDir); err != nil {
+		t.Errorf("run dir not created: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("run dir is not a directory")
+	}
+
+	// CurrentUnit/InFlight untouched.
+	if r.Object.CurrentUnit != "unit-1" {
+		t.Errorf("CurrentUnit: want unit-1, got %q", r.Object.CurrentUnit)
+	}
+	if _, ok := r.Object.InFlight["unit-1"]; !ok {
+		t.Errorf("InFlight[unit-1] should still be present")
+	}
+}
+
 func TestSetup_UnknownProvider(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	r := newRun(t, &AgentState{ProviderName: "not-registered"})
