@@ -221,6 +221,11 @@ func (d *Deps) onAutoPause(ctx context.Context, record *workflow.TypedRecord[Age
 // branch, which returns StatusCompleted whenever the Queue is empty
 // regardless of InFlight — correct today because concurrency=1 never
 // reaches it via the normal path, but wrong for a freshly-adopted unit.
+// Before returning StatusAwaitingMerge, CheckoutExistingBranch (not
+// EnsureBranch) puts the worktree on the MR's actual branch, since the
+// branch and its work already exist on origin — a checkout failure here
+// is unrecoverable (StatusFailed), not a transient pauseWork case, since
+// there's no in-progress runner turn to retry.
 //
 // On unrecoverable error, returns StatusFailed; the worktree dir is kept
 // for inspection.
@@ -341,9 +346,18 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	}
 
 	// Adopt path (see doc comment above): the unit is already in flight
-	// with a real open MR, so there's nothing to discover or plan.
+	// with a real open MR, so there's nothing to discover or plan. Check
+	// out the MR's actual existing branch (not EnsureBranch, which would
+	// create a new one off base) so the worktree is in place before the
+	// first invokeForEvent turn.
 	if r.Object.CurrentUnit != "" {
-		if _, ok := r.Object.InFlight[r.Object.CurrentUnit]; ok {
+		if mr, ok := r.Object.InFlight[r.Object.CurrentUnit]; ok {
+			if d.Git != nil {
+				worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", r.Object.CurrentUnit)
+				if err := d.Git.CheckoutExistingBranch(ctx, worktree, r.Object.BaseRepo, mr.Branch); err != nil {
+					return StatusFailed, fmt.Errorf("setup: adopt checkout existing branch: %w", err)
+				}
+			}
 			return StatusAwaitingMerge, nil
 		}
 	}

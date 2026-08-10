@@ -319,7 +319,10 @@ type fakeGit struct {
 	conflictedFiles    []string
 	conflictedFilesErr error
 
+	checkoutErr error
+
 	ensures      []ensureCall
+	checkouts    []checkoutCall
 	resets       []string
 	discards     []string
 	syncs        []string
@@ -333,6 +336,10 @@ type ensureCall struct {
 	Dir, BaseRepo, BaseBranch, Branch string
 }
 
+type checkoutCall struct {
+	Dir, BaseRepo, Branch string
+}
+
 func (g *fakeGit) EnsureBranch(_ context.Context, dir, baseRepo, baseBranch, branch string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -340,8 +347,11 @@ func (g *fakeGit) EnsureBranch(_ context.Context, dir, baseRepo, baseBranch, bra
 	return g.ensureErr
 }
 
-func (g *fakeGit) CheckoutExistingBranch(context.Context, string, string, string) error {
-	panic("not used by refactorsweep")
+func (g *fakeGit) CheckoutExistingBranch(_ context.Context, dir, baseRepo, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkouts = append(g.checkouts, checkoutCall{dir, baseRepo, branch})
+	return g.checkoutErr
 }
 
 func (g *fakeGit) HardReset(_ context.Context, dir, baseBranch string) error {
@@ -625,6 +635,53 @@ func TestSetup_AdoptPath_SkipsDiscovering(t *testing.T) {
 	}
 	if _, ok := r.Object.InFlight["unit-1"]; !ok {
 		t.Errorf("InFlight[unit-1] should still be present")
+	}
+
+	// The MR's actual existing branch was checked out, not a fresh
+	// EnsureBranch off base.
+	g := d.Git.(*fakeGit)
+	if len(g.checkouts) != 1 {
+		t.Fatalf("checkouts: want 1 call, got %d", len(g.checkouts))
+	}
+	wantDir := filepath.Join(d.RunsRoot, r.RunID, "worktrees", "unit-1")
+	got := g.checkouts[0]
+	if got.Dir != wantDir || got.BaseRepo != r.Object.BaseRepo || got.Branch != "unit-1" {
+		t.Errorf("CheckoutExistingBranch call: got %+v, want dir=%q baseRepo=%q branch=unit-1", got, wantDir, r.Object.BaseRepo)
+	}
+	if len(g.ensures) != 0 {
+		t.Errorf("EnsureBranch should not be called on the adopt path, got %d calls", len(g.ensures))
+	}
+}
+
+func TestSetup_AdoptPath_CheckoutFails(t *testing.T) {
+	fp := &fakeProvider{
+		authedUser: provider.User{ID: "42", Handle: "andreww", Email: "a@example.com"},
+		webhookID:  "wh-99",
+	}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{checkoutErr: errors.New("checkout: branch not found")})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		EventSource:  EventSourceWebhook,
+		CurrentUnit:  "unit-1",
+		InFlight: map[string]provider.MR{
+			"unit-1": {ProjectID: "acme/example", IID: 7, Branch: "unit-1", State: "opened"},
+		},
+	})
+
+	next, err := d.setup(t.Context(), r)
+	if err == nil {
+		t.Fatalf("want error when CheckoutExistingBranch fails")
+	}
+	if next != StatusFailed {
+		t.Errorf("next status: want Failed, got %v", next)
+	}
+	if !strings.Contains(err.Error(), "checkout: branch not found") {
+		t.Errorf("error should propagate git error: %v", err)
+	}
+	if len(g.checkouts) != 1 {
+		t.Errorf("checkouts: want 1 attempted call, got %d", len(g.checkouts))
 	}
 }
 
