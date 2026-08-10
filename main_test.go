@@ -1409,3 +1409,146 @@ func TestCmdWait_DaemonUnreachableNoStoreFallback_ReturnsHint(t *testing.T) {
 		t.Errorf("want 'is unreachable' and '--store' hint in error; got: %s", msg)
 	}
 }
+
+// startFakeGitLabMR starts an httptest server that answers GetMR for a
+// single project/IID with the given branch/state, mimicking gitlab_test.go's
+// TestGetMR fixture.
+func startFakeGitLabMR(t *testing.T, projectID string, iid int, branch, state string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d", projectID, iid)
+		if r.URL.Path != wantPath {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		fmt.Fprintf(w, `{"source_branch":%q,"web_url":"https://gitlab.example/%s/-/merge_requests/%d","state":%q}`,
+			branch, projectID, iid, state)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// TestCmdAdopt_TriggersRunWithAdoptFields asserts that `syntropy adopt`
+// fetches the MR's current branch/URL from the provider and forwards them
+// (plus the unit ID) as AdoptMR* fields on the trigger request, so the
+// daemon can pre-populate CurrentUnit/InFlight (see triggerHandler) instead
+// of discovering/planning from scratch.
+func TestCmdAdopt_TriggersRunWithAdoptFields(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "static-token")
+	gitlabURL := startFakeGitLabMR(t, "acme/example", 42, "feature-x", "opened")
+	daemonURL, got := startTriggerCapture(t)
+
+	err := cmdAdopt([]string{
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--mr", "42",
+		"--unit", "svc-x",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+		"--gitlab-base-url", gitlabURL,
+		"--store", filepath.Join(t.TempDir(), "store.db"),
+	})
+	if err != nil {
+		t.Fatalf("cmdAdopt: %v", err)
+	}
+	if got.AdoptUnitID != "svc-x" {
+		t.Errorf("AdoptUnitID: got %q, want %q", got.AdoptUnitID, "svc-x")
+	}
+	if got.AdoptMRIID != 42 {
+		t.Errorf("AdoptMRIID: got %d, want 42", got.AdoptMRIID)
+	}
+	if got.AdoptMRBranch != "feature-x" {
+		t.Errorf("AdoptMRBranch: got %q, want %q", got.AdoptMRBranch, "feature-x")
+	}
+	if got.ProviderName != "gitlab" || got.ProjectID != "acme/example" {
+		t.Errorf("got provider=%q project=%q", got.ProviderName, got.ProjectID)
+	}
+}
+
+// TestCmdAdopt_AlreadyTrackedErrors asserts adopt refuses to double-track an
+// MR that's already InFlight under a live Run — otherwise two Runs would
+// race to react to the same webhook/poll events for it.
+func TestCmdAdopt_AlreadyTrackedErrors(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "static-token")
+	gitlabURL := startFakeGitLabMR(t, "acme/example", 42, "feature-x", "opened")
+	_, _ = startTriggerCapture(t)
+
+	sp := filepath.Join(t.TempDir(), "store.db")
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	state := refactorsweep.AgentState{
+		Goal:     "seed",
+		InFlight: map[string]provider.MR{"svc-x": {ProjectID: "acme/example", IID: 42}},
+	}
+	obj, err := workflow.Marshal(&state)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := rs.Store(context.Background(), &workflow.Record{
+		WorkflowName: workflowName,
+		ForeignID:    "fid-existing",
+		RunID:        "aaaaaaaa-1111-0000-0000-000000000001",
+		RunState:     workflow.RunStateRunning,
+		Status:       int(refactorsweep.StatusAwaitingMerge),
+		Object:       obj,
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("store.Store: %v", err)
+	}
+
+	err = cmdAdopt([]string{
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--mr", "42",
+		"--unit", "svc-x",
+		"--base-repo", "/tmp/repo",
+		"--gitlab-base-url", gitlabURL,
+		"--store", sp,
+	})
+	if err == nil {
+		t.Fatal("want error for an already-tracked MR, got nil")
+	}
+	if !strings.Contains(err.Error(), "already tracked by run") {
+		t.Errorf("want 'already tracked by run' in error; got: %v", err)
+	}
+}
+
+// TestCmdAdopt_NotOpenErrors asserts adopt refuses to adopt an MR that
+// isn't currently open — there'd be nothing left to track.
+func TestCmdAdopt_NotOpenErrors(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "static-token")
+	gitlabURL := startFakeGitLabMR(t, "acme/example", 42, "feature-x", "merged")
+
+	err := cmdAdopt([]string{
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--mr", "42",
+		"--unit", "svc-x",
+		"--base-repo", "/tmp/repo",
+		"--gitlab-base-url", gitlabURL,
+		"--store", filepath.Join(t.TempDir(), "store.db"),
+	})
+	if err == nil {
+		t.Fatal("want error for a non-open MR, got nil")
+	}
+	if !strings.Contains(err.Error(), "not opened") {
+		t.Errorf("want 'not opened' in error; got: %v", err)
+	}
+}
+
+// TestCmdAdopt_MissingFlagsError asserts the required-flag validation.
+func TestCmdAdopt_MissingFlagsError(t *testing.T) {
+	cases := [][]string{
+		{"--mr", "42", "--unit", "svc-x", "--base-repo", "/tmp/repo"},                                        // missing provider/project
+		{"--provider", "gitlab", "--project", "acme/example", "--unit", "svc-x", "--base-repo", "/tmp/repo"}, // missing --mr
+		{"--provider", "gitlab", "--project", "acme/example", "--mr", "42", "--base-repo", "/tmp/repo"},      // missing --unit
+		{"--provider", "gitlab", "--project", "acme/example", "--mr", "42", "--unit", "svc-x"},               // missing --base-repo
+	}
+	for _, args := range cases {
+		if err := cmdAdopt(args); err == nil {
+			t.Errorf("cmdAdopt(%v): want error, got nil", args)
+		}
+	}
+}

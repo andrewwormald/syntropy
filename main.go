@@ -66,6 +66,7 @@ var commands = map[string]command{
 	"wait":    {usage: "block (token-free, local polling) until a Run reaches its first real checkpoint", run: cmdWait},
 	"list":    {usage: "list active and completed Runs", run: cmdList},
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
+	"adopt":   {usage: "re-establish live tracking for an already-open MR/PR whose Run record was lost", run: cmdAdopt},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
 	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model/spec-tool (see ADR-0002, ADR-0051)", run: cmdSetup},
@@ -116,7 +117,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "syntropy — bulk-refactor sweep daemon\n\nusage: syntropy <command> [flags]\n\ncommands:\n")
-	for _, name := range []string{"daemon", "start", "status", "wait", "list", "abandon", "resume", "phrases", "setup", "config", "version"} {
+	for _, name := range []string{"daemon", "start", "adopt", "status", "wait", "list", "abandon", "resume", "phrases", "setup", "config", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
 	fmt.Fprintf(w, "\nrun `syntropy <command> -h` for command-specific flags.\n")
@@ -598,6 +599,15 @@ type triggerRequest struct {
 	SpecBody     string   `json:"spec_body,omitempty"` // spec mode
 	DraftMRs     bool     `json:"draft_mrs,omitempty"` // open MRs as Draft / WIP
 	ForeignID    string   `json:"foreign_id,omitempty"`
+
+	// Adopt path (see cmdAdopt and refactorsweep.Deps.setup's doc comment):
+	// when AdoptUnitID is set, the daemon pre-populates AgentState.CurrentUnit
+	// and InFlight instead of requiring Units or a spec — the MR already
+	// exists, so there's nothing to discover or plan.
+	AdoptUnitID   string `json:"adopt_unit_id,omitempty"`
+	AdoptMRIID    int    `json:"adopt_mr_iid,omitempty"`
+	AdoptMRBranch string `json:"adopt_mr_branch,omitempty"`
+	AdoptMRURL    string `json:"adopt_mr_url,omitempty"`
 }
 
 type triggerResponse struct {
@@ -624,11 +634,15 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			return
 		}
 		if req.Mode == "" {
-			if len(req.Units) > 0 {
+			switch {
+			case len(req.Units) > 0:
 				req.Mode = refactorsweep.ModeSweep
-			} else if req.SpecBody != "" || req.SpecPath != "" {
+			case req.SpecBody != "" || req.SpecPath != "":
 				req.Mode = refactorsweep.ModeSpec
-			} else {
+			case req.AdoptUnitID != "":
+				// Adopt path: no queue or spec, just the one pre-existing unit.
+				req.Mode = refactorsweep.ModeSweep
+			default:
 				http.Error(w, "neither units nor spec provided", http.StatusBadRequest)
 				return
 			}
@@ -659,6 +673,16 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			SpecBody:     req.SpecBody,
 			DraftMRs:     req.DraftMRs,
 			InFlight:     map[string]provider.MR{},
+		}
+
+		if req.AdoptUnitID != "" {
+			state.CurrentUnit = req.AdoptUnitID
+			state.InFlight[req.AdoptUnitID] = provider.MR{
+				ProjectID: req.ProjectID,
+				IID:       req.AdoptMRIID,
+				Branch:    req.AdoptMRBranch,
+				URL:       req.AdoptMRURL,
+			}
 		}
 
 		runID, err := wf.Trigger(r.Context(), foreignID,
@@ -1042,6 +1066,143 @@ func cmdStart(args []string) error {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	fmt.Printf("Triggered run %s (foreign id: %s, mode: %s)\n", out.RunID, out.ForeignID, req.Mode)
+
+	printUpdateNotice()
+	return nil
+}
+
+// cmdAdopt re-establishes live tracking for an MR/PR that's already open on
+// the provider but whose original Run record was lost (e.g. the store was
+// wiped, or the Run was mistakenly abandoned). Unlike cmdStart, it never
+// creates a branch or MR — it fetches the existing MR's identity from the
+// provider and triggers a new Run with InFlight/CurrentUnit pre-populated,
+// so refactorsweep.Deps.setup routes straight to StatusAwaitingMerge (see
+// its doc comment) instead of discovering/planning from scratch.
+func cmdAdopt(args []string) error {
+	fs := flag.NewFlagSet("adopt", flag.ExitOnError)
+	var (
+		providerArg   = fs.String("provider", "", "provider name (gitlab | github)")
+		projectArg    = fs.String("project", "", "provider project ID, e.g. acme/example")
+		mrIID         = fs.Int("mr", 0, "IID/number of the already-open MR/PR to adopt")
+		unitArg       = fs.String("unit", "", "unit ID to track this MR under")
+		goal          = fs.String("goal", "", "one-sentence description of the work (status/logging only)")
+		runnerArg     = fs.String("runner", "claude", "runner name")
+		modelArg      = fs.String("model", "", "runner model override (default: runner's default)")
+		baseRepo      = fs.String("base-repo", "", "local path to a git checkout with origin remote (required)")
+		baseBranch    = fs.String("base-branch", "", "base branch (default: main)")
+		concurrency   = fs.Int("concurrency", 0, "max in-flight MRs (default 1)")
+		daemonURL     = fs.String("daemon", "http://127.0.0.1:8081", "daemon trigger endpoint")
+		storePath     = fs.String("store", "", "path to sqlite store, used to check the MR isn't already tracked by another Run (default: ~/.syntropy/store.db if it exists)")
+		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+		githubBaseURL = fs.String("github-base-url", "", "GitHub API base URL")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *providerArg == "" || *projectArg == "" {
+		return errors.New("--provider and --project are required")
+	}
+	if *mrIID <= 0 {
+		return errors.New("--mr is required (IID/number of the already-open MR/PR to adopt)")
+	}
+	if *unitArg == "" {
+		return errors.New("--unit is required (the unit ID to track this MR under)")
+	}
+	if *baseRepo == "" {
+		return errors.New("--base-repo is required")
+	}
+
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	providers, err := buildProviders(logger, *gitlabBaseURL, *githubBaseURL)
+	if err != nil {
+		return fmt.Errorf("build providers: %w", err)
+	}
+	p, ok := providers[*providerArg]
+	if !ok {
+		return fmt.Errorf("unknown or unconfigured provider %q", *providerArg)
+	}
+
+	mr, err := p.GetMR(ctx, *projectArg, *mrIID)
+	if err != nil {
+		return fmt.Errorf("fetch MR !%d: %w", *mrIID, err)
+	}
+	if mr.State != "opened" {
+		return fmt.Errorf("MR !%d is %q, not opened; adopt only re-tracks an already-open MR", *mrIID, mr.State)
+	}
+
+	// Guard against double-tracking: an MR already watched by a live Run
+	// must not be adopted into a second one, or both Runs would race to
+	// react to the same webhook/poll events for it.
+	if sp, ok := tryStoreFallback(*storePath); ok {
+		rs, _, err := store.Open(sp)
+		if err != nil {
+			return fmt.Errorf("open store %s: %w", sp, err)
+		}
+		tracked, found, err := findRunTrackingMR(ctx, rs, *projectArg, *mrIID)
+		if err != nil {
+			return fmt.Errorf("check existing tracking: %w", err)
+		}
+		if found {
+			return fmt.Errorf("MR !%d is already tracked by run %s (unit %q); nothing to adopt", *mrIID, tracked.RunID, tracked.UnitID)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "syntropy: no local store found to check for existing tracking; proceeding without that guard")
+	}
+
+	req := triggerRequest{
+		Goal:          *goal,
+		ProviderName:  *providerArg,
+		ProjectID:     *projectArg,
+		RunnerName:    *runnerArg,
+		RunnerModel:   *modelArg,
+		BaseRepo:      *baseRepo,
+		BaseBranch:    *baseBranch,
+		Concurrency:   *concurrency,
+		AdoptUnitID:   *unitArg,
+		AdoptMRIID:    mr.IID,
+		AdoptMRBranch: mr.Branch,
+		AdoptMRURL:    mr.URL,
+	}
+
+	if req.RunnerModel == "" {
+		// Neither --model was set; fall back to the default persisted by
+		// `syntropy setup` (ADR-0051), same as cmdStart.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("home dir: %w", err)
+		}
+		cfg, err := config.Load(home)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		req.RunnerModel = cfg.Model
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal trigger request: %w", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, *daemonURL+"/trigger", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("POST %s/trigger: %w (is the daemon running?)", *daemonURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("trigger: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	var out triggerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	fmt.Printf("Adopted MR !%d as unit %q under run %s (foreign id: %s)\n", mr.IID, *unitArg, out.RunID, out.ForeignID)
 
 	printUpdateNotice()
 	return nil
