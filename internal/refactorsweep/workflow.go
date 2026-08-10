@@ -80,8 +80,11 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		workflow.PauseAfterErrCount(stepPauseAfterErrCount),
 	}
 
-	b.AddStep(StatusInitiated, d.setup, StatusDiscovering, StatusFailed).
-		WithOptions(stepOpts...)
+	b.AddStep(StatusInitiated, d.setup,
+		StatusDiscovering,
+		StatusAwaitingMerge, // adopt path: InFlight + CurrentUnit pre-populated, skip discovery/planning
+		StatusFailed,
+	).WithOptions(stepOpts...)
 
 	b.AddStep(StatusDiscovering, d.discover,
 		StatusWorking,
@@ -208,6 +211,17 @@ func (d *Deps) onAutoPause(ctx context.Context, record *workflow.TypedRecord[Age
 // success and skip the registration step. Other side effects (filesystem
 // dir, defaults) are themselves idempotent.
 //
+// Adopt path: `syntropy adopt` triggers a Run with InFlight already
+// populated and CurrentUnit pointing at that same unit — the MR already
+// exists and has been under discovery/planning in a prior (lost) Run, so
+// there's nothing left to discover or plan. Once webhook/poller
+// registration and filesystem setup above have run exactly as for a
+// normal Run, skip straight to StatusAwaitingMerge instead of
+// StatusDiscovering. This also sidesteps discoverSweep's empty-queue
+// branch, which returns StatusCompleted whenever the Queue is empty
+// regardless of InFlight — correct today because concurrency=1 never
+// reaches it via the normal path, but wrong for a freshly-adopted unit.
+//
 // On unrecoverable error, returns StatusFailed; the worktree dir is kept
 // for inspection.
 func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
@@ -324,6 +338,14 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	// checked on every subsequent discover() call.
 	if r.Object.StartedAt.IsZero() {
 		r.Object.StartedAt = time.Now()
+	}
+
+	// Adopt path (see doc comment above): the unit is already in flight
+	// with a real open MR, so there's nothing to discover or plan.
+	if r.Object.CurrentUnit != "" {
+		if _, ok := r.Object.InFlight[r.Object.CurrentUnit]; ok {
+			return StatusAwaitingMerge, nil
+		}
 	}
 
 	return StatusDiscovering, nil
