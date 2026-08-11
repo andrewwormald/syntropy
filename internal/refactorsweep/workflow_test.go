@@ -2417,6 +2417,11 @@ func TestResume_NoteAdded_SelfCommittingRunner_PushesAndResolves(t *testing.T) {
 	})
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
+	// Real MRs always carry their own branch (set at creation, or at adopt
+	// time for a pre-existing MR); invokeForEvent must push to that branch,
+	// not recompute one from the run's default naming convention.
+	mr.Branch = branchName(r.RunID, "u")
+	r.Object.InFlight["u"] = mr
 
 	ev := provider.Event{
 		Kind: provider.EventNoteAdded, MR: mr,
@@ -2442,9 +2447,12 @@ func TestResume_NoteAdded_SelfCommittingRunner_PushesAndResolves(t *testing.T) {
 	// invokeForEvent's per-turn check must compare against the unit's own
 	// pushed tip, not base — the branch always has the original work
 	// commits beyond base, which would make a base comparison vacuous.
-	wantRef := "@" + branchName(r.RunID, "u")
+	wantRef := "@" + mr.Branch
 	if len(g.hasWorkCalls) == 0 || !strings.HasSuffix(g.hasWorkCalls[0], wantRef) {
 		t.Errorf("HasWorkBeyondBase should be called with the unit branch (%s); calls=%v", wantRef, g.hasWorkCalls)
+	}
+	if len(g.pushes) != 1 || g.pushes[0] != mr.Branch {
+		t.Errorf("push should target the MR's actual branch (%s); pushes=%v", mr.Branch, g.pushes)
 	}
 }
 
@@ -2479,6 +2487,43 @@ func TestResume_NoteAdded_DecisionContinue_CommitsAndPushes(t *testing.T) {
 	}
 	if len(g.pushes) != 1 {
 		t.Errorf("DecisionContinue must push the commit; pushes=%v", g.pushes)
+	}
+}
+
+// Regression for a live incident: invokeForEvent recomputed the push branch
+// with branchName(RunID, unitID) instead of using the MR's actual branch.
+// That formula matches a unit created normally by work(), but an adopted
+// unit keeps whatever branch its pre-existing MR already had — a name
+// branchName() never produces. Every push after adoption silently landed on
+// the wrong (throwaway) branch, so the real MR never moved and looked
+// permanently stuck, even though the runner kept "succeeding".
+func TestResume_NoteAdded_AdoptedUnit_PushesToMRsActualBranch(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed Foo to Bar."}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	const adoptedBranch = "feature/pre-existing-branch"
+	mr := provider.MR{ProjectID: "x/y", IID: 1, Branch: adoptedBranch}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar", DiscussionID: "disc-adopt"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("expected AwaitingMerge, got %v", next)
+	}
+	if len(g.pushes) != 1 || g.pushes[0] != adoptedBranch {
+		t.Errorf("push must target the adopted MR's actual branch %q, not a recomputed branch name; pushes=%v", adoptedBranch, g.pushes)
+	}
+	wantRef := "@" + adoptedBranch
+	if len(g.hasWorkCalls) == 0 || !strings.HasSuffix(g.hasWorkCalls[0], wantRef) {
+		t.Errorf("HasWorkBeyondBase should compare against the adopted branch (%s); calls=%v", wantRef, g.hasWorkCalls)
 	}
 }
 

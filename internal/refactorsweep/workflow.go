@@ -1569,7 +1569,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// HasWorkBeyondBase rather than HasChanges so a runner that
 			// commits its own work (clean tree) isn't mistaken for "nothing
 			// changed" and its commits silently never pushed.
-			branch := branchName(r.RunID, unitID)
+			// Use the MR's actual branch, not the run's default naming
+			// convention: an adopted unit's branch predates the run and
+			// almost never matches branchName(RunID, unitID), so recomputing
+			// it here pushed every fix to a branch nobody was looking at,
+			// silently no-oping the push while the MR itself never moved.
+			branch := mr.Branch
 			hasWork, gErr := d.Git.HasWorkBeyondBase(ctx, req.Worktree, branch)
 			if gErr != nil {
 				r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
