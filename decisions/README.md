@@ -156,3 +156,4 @@ forces or unlocks.
 | 0107 | `syntropy wait` — token-free local poll for a Run's first checkpoint    | Accepted | 2026-08-07 |
 | 0108 | Skill-authored prose follows ASD-STE100 (Simplified Technical English)  | Accepted | 2026-08-07 |
 | 0109 | `syntropy adopt` re-establishes tracking on an existing MR, posts an "Adopted by" comment | Accepted | 2026-08-10 |
+| 0110 | `CheckoutExistingBranch` prunes stale worktrees before adopting          | Accepted | 2026-08-11 |
