@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -1462,6 +1463,63 @@ func TestCmdAdopt_TriggersRunWithAdoptFields(t *testing.T) {
 	}
 	if got.ProviderName != "gitlab" || got.ProjectID != "acme/example" {
 		t.Errorf("got provider=%q project=%q", got.ProviderName, got.ProjectID)
+	}
+}
+
+// TestBuildInitialAgentState_AdoptPath_IsCleanSlate is a regression guard
+// for the incident's third failure mode: adoption must start the new Run
+// from a genuinely fresh AgentState, never one carrying over history,
+// budget usage, or pause state from anywhere else. It builds the state for
+// an adopt-shaped trigger request and asserts every field is at its zero
+// value except the handful the adopt path is documented to populate
+// (buildInitialAgentState's doc comment) — so a future change that starts
+// threading in prior-Run data (e.g. by looking up and merging an existing
+// record) fails this test instead of shipping a silent leak.
+func TestBuildInitialAgentState_AdoptPath_IsCleanSlate(t *testing.T) {
+	req := triggerRequest{
+		ProviderName:  "gitlab",
+		ProjectID:     "acme/example",
+		RunnerName:    "claude",
+		BaseRepo:      "/tmp/repo",
+		AdoptUnitID:   "svc-x",
+		AdoptMRIID:    42,
+		AdoptMRBranch: "feature-x",
+		AdoptMRURL:    "https://gitlab.example/acme/example/-/merge_requests/42",
+	}
+	state := buildInitialAgentState(req)
+
+	// Fields the adopt path is documented to populate.
+	wantSet := map[string]bool{
+		"ProviderName": true,
+		"ProjectID":    true,
+		"BaseRepo":     true,
+		"RunnerName":   true,
+		"CurrentUnit":  true,
+		"InFlight":     true,
+	}
+
+	v := reflect.ValueOf(*state)
+	tp := v.Type()
+	for i := 0; i < tp.NumField(); i++ {
+		field := tp.Field(i)
+		if wantSet[field.Name] {
+			continue
+		}
+		fv := v.Field(i)
+		if !fv.IsZero() {
+			t.Errorf("adopted AgentState.%s should be zero-valued (clean slate), got %#v", field.Name, fv.Interface())
+		}
+	}
+
+	if state.CurrentUnit != "svc-x" {
+		t.Errorf("CurrentUnit: got %q, want svc-x", state.CurrentUnit)
+	}
+	if len(state.InFlight) != 1 {
+		t.Fatalf("InFlight: want exactly 1 entry, got %d", len(state.InFlight))
+	}
+	mr := state.InFlight["svc-x"]
+	if mr.ProjectID != "acme/example" || mr.IID != 42 || mr.Branch != "feature-x" {
+		t.Errorf("InFlight[svc-x]: got %+v", mr)
 	}
 }
 

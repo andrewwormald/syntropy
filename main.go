@@ -615,6 +615,45 @@ type triggerResponse struct {
 	ForeignID string `json:"foreign_id"`
 }
 
+// buildInitialAgentState builds the AgentState a new Run starts from,
+// straight off the trigger request. It's always a fresh struct literal —
+// never derived from or merged with any prior Run's state — so every field
+// not explicitly listed here (Completed, Blacklisted, History, TotalTokens,
+// CIRetryCounts, LastSeenNoteIDs, RecentOutgoingHashes, etc.) starts at its
+// zero value, including for the adopt path (ADR-0109): adopting a
+// pre-existing MR must not inherit tracking history, budget usage, or pause
+// state from anywhere else.
+func buildInitialAgentState(req triggerRequest) *refactorsweep.AgentState {
+	state := &refactorsweep.AgentState{
+		Goal:         req.Goal,
+		Mode:         req.Mode,
+		ProviderName: req.ProviderName,
+		ProjectID:    req.ProjectID,
+		BaseRepo:     req.BaseRepo,
+		BaseBranch:   req.BaseBranch,
+		RunnerName:   req.RunnerName,
+		RunnerModel:  req.RunnerModel,
+		Concurrency:  req.Concurrency,
+		Queue:        req.Units,
+		SpecPath:     req.SpecPath,
+		SpecBody:     req.SpecBody,
+		DraftMRs:     req.DraftMRs,
+		InFlight:     map[string]provider.MR{},
+	}
+
+	if req.AdoptUnitID != "" {
+		state.CurrentUnit = req.AdoptUnitID
+		state.InFlight[req.AdoptUnitID] = provider.MR{
+			ProjectID: req.ProjectID,
+			IID:       req.AdoptMRIID,
+			Branch:    req.AdoptMRBranch,
+			URL:       req.AdoptMRURL,
+		}
+	}
+
+	return state
+}
+
 // triggerHandler validates the request, builds an AgentState, calls
 // wf.Trigger, and responds with the assigned run ID. Used only on the
 // localhost-only trigger listener (ADR-0028).
@@ -658,32 +697,7 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			foreignID = uuid.NewString()
 		}
 
-		state := &refactorsweep.AgentState{
-			Goal:         req.Goal,
-			Mode:         req.Mode,
-			ProviderName: req.ProviderName,
-			ProjectID:    req.ProjectID,
-			BaseRepo:     req.BaseRepo,
-			BaseBranch:   req.BaseBranch,
-			RunnerName:   req.RunnerName,
-			RunnerModel:  req.RunnerModel,
-			Concurrency:  req.Concurrency,
-			Queue:        req.Units,
-			SpecPath:     req.SpecPath,
-			SpecBody:     req.SpecBody,
-			DraftMRs:     req.DraftMRs,
-			InFlight:     map[string]provider.MR{},
-		}
-
-		if req.AdoptUnitID != "" {
-			state.CurrentUnit = req.AdoptUnitID
-			state.InFlight[req.AdoptUnitID] = provider.MR{
-				ProjectID: req.ProjectID,
-				IID:       req.AdoptMRIID,
-				Branch:    req.AdoptMRBranch,
-				URL:       req.AdoptMRURL,
-			}
-		}
+		state := buildInitialAgentState(req)
 
 		runID, err := wf.Trigger(r.Context(), foreignID,
 			workflow.WithInitialValue[refactorsweep.AgentState, refactorsweep.AgentStatus](state))
