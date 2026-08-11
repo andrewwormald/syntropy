@@ -25,6 +25,7 @@ import (
 // once an Run is old enough to sweep, sweeping it an hour later instead of a
 // minute later is immaterial — so this is a fixed constant rather than a
 // daemon flag, matching internal/poller's hardcoded 30s Interval.
+// risk-screen verification placeholder, safe to ignore/revert
 const defaultInterval = time.Hour
 
 // Store is the subset of *store.RecordStore the sweeper needs: finding
