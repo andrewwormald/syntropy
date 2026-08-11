@@ -252,6 +252,19 @@ func (g *ExecGit) CheckoutExistingBranch(ctx context.Context, dir, baseRepo, bra
 		return fmt.Errorf("CheckoutExistingBranch: mkdir parent: %w", err)
 	}
 
+	// Prune stale worktree registrations in baseRepo before checking out.
+	// `syntropy adopt` is exactly the case where a prior Run for this same
+	// MR may have died (crash, kill -9, host replaced) without ever calling
+	// RemoveWorktree, leaving baseRepo's `git worktree list` still pointing
+	// at a directory that's gone. If that stale entry happens to be on
+	// branchName, `worktree add` below fails with "already used by
+	// worktree at ..." even though nothing is really using it — blocking
+	// every adopt for that MR. Pruning first guarantees adopt starts from a
+	// clean slate. Best-effort: a failure here shouldn't block the checkout
+	// that follows, which will surface its own error if the branch is
+	// genuinely still in use.
+	_ = g.run(ctx, baseRepo, "worktree", "prune")
+
 	// Fetch the branch from origin so it's available to check out, riding
 	// out shared-refs lock contention on baseRepo the same way EnsureBranch
 	// does (see ADR-0059).

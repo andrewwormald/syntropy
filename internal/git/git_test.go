@@ -163,6 +163,60 @@ func TestExecGit_CheckoutExistingBranch_ChecksOutBranchAlreadyOnOrigin(t *testin
 	}
 }
 
+// TestExecGit_CheckoutExistingBranch_PrunesStaleWorktreeRegistration
+// reproduces the adopt incident: a prior Run died without ever calling
+// RemoveWorktree, leaving baseRepo's worktree registration pointing at a
+// directory that's since been deleted out from under git. Checking out the
+// same branch into a new directory must still succeed rather than failing
+// with "already used by worktree at ...".
+func TestExecGit_CheckoutExistingBranch_PrunesStaleWorktreeRegistration(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	runMust(t, baseRepo, "checkout", "-b", "adopt/existing-mr")
+	writeFile(t, baseRepo, "EXISTING.md", "already in flight\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "in-flight work")
+	runMust(t, baseRepo, "push", "origin", "adopt/existing-mr")
+	runMust(t, baseRepo, "checkout", "main")
+
+	g := NewExec("syntropy-test", "syntropy@test.invalid")
+	ctx := t.Context()
+
+	// Register a worktree for the branch, then delete its directory without
+	// telling git — the state a killed prior Run leaves behind.
+	deadDir := filepath.Join(t.TempDir(), "dead-run-worktree")
+	runMust(t, baseRepo, "worktree", "add", deadDir, "adopt/existing-mr")
+	if err := os.RemoveAll(deadDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.CheckoutExistingBranch(ctx, worktreeDir, baseRepo, "adopt/existing-mr"); err != nil {
+		t.Fatalf("CheckoutExistingBranch: %v", err)
+	}
+
+	current, err := g.currentBranch(ctx, worktreeDir)
+	if err != nil {
+		t.Fatalf("currentBranch: %v", err)
+	}
+	if current != "adopt/existing-mr" {
+		t.Errorf("current branch = %q, want %q", current, "adopt/existing-mr")
+	}
+}
+
 // TestExecGit_CheckoutExistingBranch_UnknownBranchErrors ensures a branch
 // that doesn't exist on origin surfaces as an error rather than silently
 // creating a new branch (which is what EnsureBranch's `-b` would do).
