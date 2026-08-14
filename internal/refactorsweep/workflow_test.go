@@ -3327,6 +3327,97 @@ func TestResume_MRConflict_WhilePaused_StaysPaused(t *testing.T) {
 	}
 }
 
+// TestResume_NoteAdded_WhilePaused_IdenticalReason_StopsAfterStreak asserts
+// the repeated-pause escalation (ADR-0111): a non-Ask pause that keeps
+// reproducing the identical PauseReason on every freeform reply stops
+// invoking the runner once maxIdenticalPauseStreak is hit, instead of
+// burning tokens on every subsequent comment forever.
+func TestResume_NoteAdded_WhilePaused_IdenticalReason_StopsAfterStreak(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionFail, Summary: "still can't find the referenced file",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "still can't find the referenced file"
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 1, Body: "any luck?"},
+	}
+
+	// The first maxIdenticalPauseStreak identical replies still invoke the
+	// runner (each reproduces the identical PauseReason).
+	for i := 0; i < maxIdenticalPauseStreak; i++ {
+		ev.Note.ID = int64(i + 1)
+		next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+		if err != nil {
+			t.Fatalf("resume %d: %v", i, err)
+		}
+		if next != StatusPaused {
+			t.Errorf("resume %d: want Paused, got %v", i, next)
+		}
+	}
+	if len(fr.calls) != maxIdenticalPauseStreak {
+		t.Fatalf("want %d runner calls, got %d", maxIdenticalPauseStreak, len(fr.calls))
+	}
+	if r.Object.IdenticalPauseStreak != maxIdenticalPauseStreak {
+		t.Errorf("want IdenticalPauseStreak == %d, got %d", maxIdenticalPauseStreak, r.Object.IdenticalPauseStreak)
+	}
+
+	// One more identical reply must not invoke the runner again.
+	ev.Note.ID = int64(maxIdenticalPauseStreak + 1)
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume final: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
+	}
+	if len(fr.calls) != maxIdenticalPauseStreak {
+		t.Errorf("runner should not be invoked once the streak cap is hit; got %d calls", len(fr.calls))
+	}
+}
+
+// TestResume_NoteAdded_WhilePaused_ReasonChanges_ResetsStreak asserts that a
+// freeform reply which actually changes the PauseReason (the runner made
+// progress, or hit a different problem) resets IdenticalPauseStreak rather
+// than counting toward the escalation cap.
+func TestResume_NoteAdded_WhilePaused_ReasonChanges_ResetsStreak(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionFail, Summary: "a new, different problem",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "the original problem"
+	r.Object.IdenticalPauseStreak = maxIdenticalPauseStreak - 1
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 1, Body: "I pushed a fix attempt"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should still be invoked; got %d calls", len(fr.calls))
+	}
+	if r.Object.IdenticalPauseStreak != 0 {
+		t.Errorf("PauseReason changed, streak should reset to 0; got %d", r.Object.IdenticalPauseStreak)
+	}
+}
+
 // TestResume_PipelineFailed_DecisionRetryCI_RetriesFailedJobs asserts that a
 // DecisionRetryCI response (ADR-0068) makes no code change — it retries the
 // failed job(s) via RetryPipelineJob, stays AwaitingMerge, and does not

@@ -84,6 +84,17 @@ type AgentState struct {
 	PromptInjection    string             `json:"prompt_injection"`     // /syntropy prompt <text>; consumed by next runner call
 	AbandonRequestedAt time.Time          `json:"abandon_requested_at"` // populated when StatusAwaitingAbandonConfirm (ADR-0026)
 
+	// IdenticalPauseStreak counts consecutive freeform-note invocations,
+	// during a non-Ask pause, that left PauseReason exactly as it was
+	// beforehand — i.e. the runner looked at the note and landed back on
+	// the same stuck conclusion. Reset to 0 whenever PauseReason changes or
+	// a control command clears/re-establishes the pause. Once it reaches
+	// maxIdenticalPauseStreak, resume() stops invoking the runner for this
+	// pause until a control command breaks the loop (ADR-0111) — otherwise
+	// a human idly replying to a pause comment burns tokens forever without
+	// the Run ever moving.
+	IdenticalPauseStreak int `json:"identical_pause_streak,omitempty"`
+
 	// CIRetryCounts tracks, per in-flight unit ID, how many consecutive
 	// times invokeForEvent has retried a CI failure the runner judged
 	// transient (DecisionRetryCI, ADR-0068). The entry is deleted on the

@@ -1270,8 +1270,28 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		if strings.HasPrefix(r.Object.PauseReason, askPausePrefix) {
 			return d.invokeForEvent(ctx, r, unitID, ev)
 		}
+
+		// Repeated-pause escalation (ADR-0111): once this pause has already
+		// reproduced itself maxIdenticalPauseStreak times in a row, stop
+		// spending tokens on it — a freeform reply isn't going to break a
+		// loop an explicit control command hasn't.
+		if r.Object.IdenticalPauseStreak >= maxIdenticalPauseStreak {
+			return StatusPaused, nil
+		}
+
+		before := r.Object.PauseReason
 		if _, err := d.invokeForEvent(ctx, r, unitID, ev); err != nil {
 			return StatusPaused, err
+		}
+		if r.Object.PauseReason == before {
+			r.Object.IdenticalPauseStreak++
+			if r.Object.IdenticalPauseStreak == maxIdenticalPauseStreak {
+				p := d.Providers[r.Object.ProviderName]
+				_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
+					fmt.Sprintf("⏸️ This pause has come back unchanged %d times in a row. I'll stop re-running on new comments here — reply with a `/syntropy` control command (e.g. `/syntropy retry`, `/syntropy skip`) to move this forward.", maxIdenticalPauseStreak))
+			}
+		} else {
+			r.Object.IdenticalPauseStreak = 0
 		}
 		return StatusPaused, nil
 	}
@@ -1794,6 +1814,14 @@ const maxHookRetries = 2
 // up and pausing/failing like any other runner error. Scoped to one call,
 // same rationale as maxHookRetries.
 const maxParseRetries = 2
+
+// maxIdenticalPauseStreak caps how many consecutive freeform notes, during a
+// non-Ask pause, may re-invoke the runner and land back on the identical
+// PauseReason before resume() stops invoking the runner for that pause
+// altogether (ADR-0111). Without this, a human idly replying on a stuck
+// MR — without actually addressing the pause — re-runs the subagent on
+// every reply forever, burning tokens for a Run that never moves.
+const maxIdenticalPauseStreak = 3
 
 // --- resume helpers ---
 
