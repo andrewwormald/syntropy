@@ -203,6 +203,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 		reason = fmt.Sprintf("%s: %s", reason, args)
 	}
 	r.Object.PauseReason = reason
+	r.Object.IdenticalPauseStreak = 0
 	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("🛑 Paused per @%s. Reply `/syntropy resume` to continue.", ev.Author.Handle))
 	return StatusPaused, nil
@@ -227,6 +228,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
+	r.Object.IdenticalPauseStreak = 0
 	var next AgentStatus
 	var msg string
 	switch {
@@ -279,6 +281,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
+	r.Object.IdenticalPauseStreak = 0
 	if len(r.Object.InFlight) == 0 && r.Object.CurrentUnit != "" {
 		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("🔄 Cleared pause per @%s. Retrying work on `%s`.", ev.Author.Handle, r.Object.CurrentUnit))
