@@ -158,3 +158,4 @@ forces or unlocks.
 | 0109 | `syntropy adopt` re-establishes tracking on an existing MR, posts an "Adopted by" comment | Accepted | 2026-08-10 |
 | 0110 | `CheckoutExistingBranch` prunes stale worktrees before adopting          | Accepted | 2026-08-11 |
 | 0111 | Repeated-pause escalation stops re-invoking the runner                  | Accepted | 2026-08-14 |
+| 0112 | OpenHands runner: per-Run Agent Server subprocess, reused decision-marker protocol, planning stays Claude-only | Accepted | 2026-09-03 |
