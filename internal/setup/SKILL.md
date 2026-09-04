@@ -147,13 +147,31 @@ ADR to conform to this style after the fact.
    Without this, MRs/PRs default to a generic `<goal>: <unit-id>` title —
    which can badly violate a repo's real conventions (e.g. an 80-char CI
    title-length check) and isn't obvious until CI already failed on it.
+
+   The same command's output also has a `Runners: ...` line — the
+   execution runners this `syntropy` binary has registered (e.g.
+   `Runners: claude` or `Runners: claude, openhands`). Read this line to
+   fill the spec's required `runner:` field in step 2:
+   - **Only `claude` is listed** — set `runner: claude` yourself, no need
+     to ask the user.
+   - **More than one runner is listed** — ask the user which runner
+     should execute this spec's units before writing the spec. Say what
+     each option means in one line (e.g. "claude runs each unit as a
+     single `claude -p` turn; openhands runs each unit as a full agent
+     session against an Agent Server") so the choice is informed, not
+     blind. Default your suggestion to `claude` if the user has no
+     preference — it's the only runner used for planning
+     (`discoverSpec`) regardless of this field, so picking it for
+     execution too keeps behavior uniform. Don't read `.syntropy.yml`
+     or daemon flags yourself to guess which runners are available;
+     this line is the source of truth.
 2. **Write a spec.** A markdown file with YAML frontmatter (`goal`,
-   `provider`, `project`, `base_branch`, `base_repo`, `concurrency`,
-   `draft_mrs`, `status`) plus a markdown body expanding the goal — see
-   the README's Quick Start section in the syntropy repo for a full
-   example, or ask the user for the details you need. Default to writing
-   it to `~/syntropy-specs/<name>.spec.md` unless the user's told you
-   otherwise — a plain sibling directory, deliberately outside
+   `provider`, `project`, `runner`, `base_branch`, `base_repo`,
+   `concurrency`, `draft_mrs`, `status`) plus a markdown body expanding
+   the goal — see the README's Quick Start section in the syntropy repo
+   for a full example, or ask the user for the details you need. Default
+   to writing it to `~/syntropy-specs/<name>.spec.md` unless the user's
+   told you otherwise — a plain sibling directory, deliberately outside
    `~/.syntropy/`. Syntropy itself never reads, writes, indexes, or
    cleans up anything in there; it only ever reads whatever single path
    you hand it via `--spec` at trigger time. Syntropy owns execution,
