@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -2119,7 +2120,15 @@ func cmdPhrases(args []string) error {
 // agent following the syntropy Skill can read which spec tool to route
 // to off this command's output instead of resolving RepoConfig and
 // config.Config itself.
-func checkRepoConfig(repoDir string, w io.Writer) ([]string, error) {
+//
+// It also prints the execution runners this binary has registered
+// (runners.Names()), so an agent can tell whether openhands is available
+// alongside claude without reading daemon flags or source.
+func checkRepoConfig(repoDir string, w io.Writer, runners *runner.Registry) ([]string, error) {
+	names := runners.Names()
+	sort.Strings(names)
+	fmt.Fprintf(w, "Runners: %s\n", strings.Join(names, ", "))
+
 	cfg, err := setup.ReadRepoConfig(repoDir)
 	if err != nil {
 		return nil, fmt.Errorf("read repo config: %w", err)
@@ -2188,7 +2197,10 @@ func cmdConfig(args []string) error {
 				return fmt.Errorf("cwd: %w", err)
 			}
 		}
-		missing, err := checkRepoConfig(repoDir, os.Stdout)
+		runners := runner.NewRegistry()
+		runners.Register(claude.NewRunner(""))
+		runners.Register(openhands.NewRunner(""))
+		missing, err := checkRepoConfig(repoDir, os.Stdout, runners)
 		if err != nil {
 			return err
 		}
