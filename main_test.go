@@ -419,6 +419,61 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 	}
 }
 
+// TestBuildRunners_OpenHandsOptIn asserts openhands is only registered when
+// --openhands-server-binary is set — claude is always present regardless.
+func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
+	logger := discardLogger()
+
+	runners := buildRunners(logger, "")
+	if _, err := runners.Get("claude"); err != nil {
+		t.Errorf("claude should always be registered: %v", err)
+	}
+	if _, err := runners.Get("openhands"); err == nil {
+		t.Errorf("openhands should not be registered when --openhands-server-binary is unset")
+	}
+
+	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server")
+	if _, err := runners.Get("claude"); err != nil {
+		t.Errorf("claude should still be registered: %v", err)
+	}
+	if rn, err := runners.Get("openhands"); err != nil {
+		t.Errorf("openhands should be registered when --openhands-server-binary is set: %v", err)
+	} else if rn.Name() != "openhands" {
+		t.Errorf("Name() = %q, want %q", rn.Name(), "openhands")
+	}
+}
+
+// TestBuildRunners_SpecOmittingRunnerStillResolvesToClaude proves that
+// registering openhands alongside claude doesn't change what a spec that
+// omits `runner:` resolves to. cmdStart's --runner flag defaults to
+// "claude" (see cmdStart's runnerArg), and that default is only overridden
+// by a spec's `runner:` when the spec sets one (main.go's "if req.RunnerName
+// == \"claude\" && sp.Runner != \"\"" guard) — so an omitted `runner:`
+// leaves req.RunnerName at "claude" regardless of what the daemon's
+// execution registry contains. This asserts the registry side of that:
+// with both runners registered, resolving the CLI's default runner name
+// ("claude") returns the claude runner, not openhands.
+func TestBuildRunners_SpecOmittingRunnerStillResolvesToClaude(t *testing.T) {
+	logger := discardLogger()
+
+	// Both runners registered, as if --openhands-server-binary was set.
+	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server")
+	if len(runners.Names()) != 2 {
+		t.Fatalf("want both claude and openhands registered; got %v", runners.Names())
+	}
+
+	// defaultRunnerName mirrors cmdStart's `--runner` flag default, which is
+	// what req.RunnerName stays at when a spec omits `runner:`.
+	const defaultRunnerName = "claude"
+	rn, err := runners.Get(defaultRunnerName)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", defaultRunnerName, err)
+	}
+	if rn.Name() != "claude" {
+		t.Errorf("a spec omitting `runner:` resolved to %q, want %q", rn.Name(), "claude")
+	}
+}
+
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
