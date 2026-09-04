@@ -1,9 +1,14 @@
 // Package openhands implements runner.Runner by managing a per-Run
 // openhands-agent-server subprocess and driving it over HTTP. See ADR-0112
-// for the design: a subprocess (not a shared server), the same prompt +
-// decision-marker protocol as internal/runner/claude (ADR-0027), and
-// confirmation policy forced to auto-approve so tool calls never pause for
-// human confirmation.
+// for the design: a subprocess (not a shared server), the same
+// decision-marker protocol as internal/runner/claude (ADR-0027) reused via
+// claude.ParseDecision, a package-local prompt built by BuildPrompt (see
+// prompt.go — it ports claude.BuildPrompt's section structure but adds an
+// OpenHands-specific never-push/never-call-provider-API instruction, since
+// the Agent Server's auto-approve confirmation policy may grant broader
+// tool access than Claude Code's --dangerously-skip-permissions sandbox),
+// and confirmation policy forced to auto-approve so tool calls never pause
+// for human confirmation.
 //
 // The Agent Server endpoint shapes assumed here (payload/response field
 // names) are best-effort against OpenHands' published OpenAPI schema as of
@@ -123,7 +128,7 @@ func (r *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 // (ADR-0112 §2). Split out from Run so the submit/poll/parse core can be
 // unit-tested against a mock HTTP server without a real subprocess.
 func (r *Runner) converse(ctx context.Context, baseURL string, req runner.Request) (runner.Response, error) {
-	prompt := claude.BuildPrompt(req)
+	prompt := BuildPrompt(req)
 
 	convID, err := r.createConversation(ctx, baseURL, req, prompt)
 	if err != nil {
