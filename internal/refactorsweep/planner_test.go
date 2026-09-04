@@ -32,7 +32,7 @@ func specRunInDiscover(t *testing.T, plan []PlannedIncrement) *workflow.Run[Agen
 
 func TestDiscover_SpecMode_PlannerContinuesWithNewIncrement(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+	fr := d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionContinue,
 		Summary:  "Migrate services/payments to slog",
 		Tokens:   500,
@@ -74,7 +74,7 @@ func TestDiscover_SpecMode_PlannerContinuesWithNewIncrement(t *testing.T) {
 
 func TestDiscover_SpecMode_PlannerDone_CompletesRun(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionDone,
 		Summary:  "Spec is fully implemented; no further increments needed.",
 	}})
@@ -93,7 +93,7 @@ func TestDiscover_SpecMode_PlannerDone_CompletesRun(t *testing.T) {
 
 func TestDiscover_SpecMode_PlannerNoChange_Completes(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionNoChange,
 		Summary:  "Nothing actionable to plan right now",
 	}})
@@ -108,7 +108,7 @@ func TestDiscover_SpecMode_PlannerNoChange_Completes(t *testing.T) {
 func TestDiscover_SpecMode_PlannerAsks_Pauses(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
-	d.withRunner(t, &fakeRunner{resp: runner.Response{
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionAsk,
 		Question: "Should I refactor the deprecated middleware too?",
 	}})
@@ -125,7 +125,7 @@ func TestDiscover_SpecMode_PlannerAsks_Pauses(t *testing.T) {
 
 func TestDiscover_SpecMode_PlannerFails(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionFail,
 		Summary:  "I can't make sense of this spec",
 	}})
@@ -142,7 +142,7 @@ func TestDiscover_SpecMode_PlannerFails(t *testing.T) {
 
 func TestDiscover_SpecMode_RunnerError(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{err: errors.New("rate limited")})
+	d.withPlannerRunner(t, &fakeRunner{err: errors.New("rate limited")})
 	r := specRunInDiscover(t, nil)
 
 	next, err := d.discover(t.Context(), r)
@@ -159,7 +159,7 @@ func TestDiscover_SpecMode_BuildsPromptFromHistory(t *testing.T) {
 	// that previous increments and their outcomes are surfaced — the
 	// planner needs this to avoid repeating itself.
 	d := newDeps(t, &fakeProvider{})
-	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	fr := d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
 	r := specRunInDiscover(t, []PlannedIncrement{
 		{UnitID: "increment-1", Rationale: "migrate payments", Outcome: "completed"},
 		{UnitID: "increment-2", Rationale: "migrate kyc", Outcome: "blacklisted"},
@@ -187,7 +187,7 @@ func TestDiscover_SpecMode_PromptInjectionConsumedOnPlanning(t *testing.T) {
 	// /syntropy prompt should be applied to the next planning call too,
 	// not just to work() / invokeForEvent.
 	d := newDeps(t, &fakeProvider{})
-	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	fr := d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
 	r := specRunInDiscover(t, nil)
 	r.Object.PromptInjection = "remember to chunk by service boundary"
 
@@ -203,7 +203,7 @@ func TestDiscover_SpecMode_PromptInjectionConsumedOnPlanning(t *testing.T) {
 
 func TestDiscover_SpecMode_UnitIDsAreSequential(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
 		Decision: DecisionContinue,
 		Summary:  "Next slice",
 	}})
@@ -264,7 +264,7 @@ func TestMarkUnitMerged_UpdatesPlanOutcome(t *testing.T) {
 func TestDiscover_SpecMode_SetsUpPlanningWorktree(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	g := d.withGit(&fakeGit{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "next slice"}})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "next slice"}})
 
 	r := specRunInDiscover(t, nil)
 	r.Object.BaseRepo = "/some/repo"
@@ -297,7 +297,7 @@ func TestDiscover_SpecMode_SkipsWorktreeWhenBaseRepoEmpty(t *testing.T) {
 	// fakes don't have to handle it.
 	d := newDeps(t, &fakeProvider{})
 	g := d.withGit(&fakeGit{})
-	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
 	r := specRunInDiscover(t, nil)
 	r.Object.BaseRepo = ""
 
@@ -306,6 +306,66 @@ func TestDiscover_SpecMode_SkipsWorktreeWhenBaseRepoEmpty(t *testing.T) {
 	}
 	if len(g.ensures) != 0 || len(g.resets) != 0 {
 		t.Errorf("worktree setup should be skipped when BaseRepo=''")
+	}
+}
+
+// TestDiscoverSpec_AlwaysUsesPlannerRunnersNeverExecutionRunners proves
+// planning is structurally Claude-only: even when a spec's execution runner
+// (RunnerName, used by work()/invokeForEvent) is set to something else
+// entirely, discoverSpec must resolve the planner from Deps.PlannerRunners
+// by the fixed plannerRunnerName, and must never touch Deps.Runners.
+func TestDiscoverSpec_AlwaysUsesPlannerRunnersNeverExecutionRunners(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+
+	// An execution-registry runner registered under the spec's RunnerName.
+	// If discoverSpec ever resolved the planner from d.Runners /
+	// r.Object.RunnerName, this fake would be invoked instead.
+	execRunner := d.withRunner(t, &fakeRunner{
+		name: "openhands",
+		resp: runner.Response{Decision: DecisionDone, Summary: "should never be called for planning"},
+	})
+
+	plannerRunner := d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "next slice",
+	}})
+
+	r := specRunInDiscover(t, nil)
+	r.Object.RunnerName = "openhands"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusWorking {
+		t.Errorf("want StatusWorking, got %v", next)
+	}
+	if len(execRunner.calls) != 0 {
+		t.Errorf("execution runner (RunnerName=%q) should never be invoked for planning; got %d calls", r.Object.RunnerName, len(execRunner.calls))
+	}
+	if len(plannerRunner.calls) != 1 {
+		t.Errorf("planner runner should be invoked exactly once; got %d calls", len(plannerRunner.calls))
+	}
+}
+
+// TestDiscoverSpec_NoPlannerRunners proves discoverSpec fails clearly (not
+// silently falling back to Deps.Runners) when PlannerRunners is unset.
+func TestDiscoverSpec_NoPlannerRunners(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.PlannerRunners = nil
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+
+	r := specRunInDiscover(t, nil)
+
+	next, err := d.discover(t.Context(), r)
+	if err == nil {
+		t.Fatalf("want error when PlannerRunners is nil")
+	}
+	if next != StatusFailed {
+		t.Errorf("want StatusFailed, got %v", next)
+	}
+	if !strings.Contains(err.Error(), "PlannerRunners") {
+		t.Errorf("error should mention PlannerRunners; got %q", err.Error())
 	}
 }
 

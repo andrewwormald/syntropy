@@ -241,6 +241,10 @@ func (f *fakeProvider) IsBot(u provider.User) bool { return u.Bot }
 type fakeRunner struct {
 	mu sync.Mutex
 
+	// name overrides Name(); defaults to "fake-runner" when empty. Set by
+	// withPlannerRunner so a fake can be registered under plannerRunnerName.
+	name string
+
 	resp  runner.Response
 	err   error
 	calls []runner.Request
@@ -257,7 +261,12 @@ type fakeRunner struct {
 	onRun func(req runner.Request)
 }
 
-func (f *fakeRunner) Name() string { return "fake-runner" }
+func (f *fakeRunner) Name() string {
+	if f.name != "" {
+		return f.name
+	}
+	return "fake-runner"
+}
 func (f *fakeRunner) Run(_ context.Context, req runner.Request) (runner.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -471,12 +480,13 @@ func newDeps(t *testing.T, p provider.Provider) *Deps {
 	t.Helper()
 	reg := runner.NewRegistry()
 	return &Deps{
-		Providers:     map[string]provider.Provider{p.Name(): p},
-		Runners:       reg,
-		Git:           &fakeGit{},
-		Secrets:       webhook.NewSecretRegistry(),
-		PublicBaseURL: "https://syntropy.test",
-		RunsRoot:      t.TempDir(),
+		Providers:      map[string]provider.Provider{p.Name(): p},
+		Runners:        reg,
+		PlannerRunners: runner.NewRegistry(),
+		Git:            &fakeGit{},
+		Secrets:        webhook.NewSecretRegistry(),
+		PublicBaseURL:  "https://syntropy.test",
+		RunsRoot:       t.TempDir(),
 	}
 }
 
@@ -492,6 +502,17 @@ func (d *Deps) withGit(g *fakeGit) *fakeGit {
 func (d *Deps) withRunner(t *testing.T, fr *fakeRunner) *fakeRunner {
 	t.Helper()
 	d.Runners.Register(fr)
+	return fr
+}
+
+// withPlannerRunner registers fr under plannerRunnerName in
+// Deps.PlannerRunners — the only registry discoverSpec ever consults. Use
+// this (not withRunner) for any test that exercises discoverSpec/discover
+// in spec mode.
+func (d *Deps) withPlannerRunner(t *testing.T, fr *fakeRunner) *fakeRunner {
+	t.Helper()
+	fr.name = plannerRunnerName
+	d.PlannerRunners.Register(fr)
 	return fr
 }
 
