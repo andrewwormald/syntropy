@@ -42,6 +42,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/retention"
 	"github.com/andrewwormald/syntropy/internal/runner"
 	"github.com/andrewwormald/syntropy/internal/runner/claude"
+	"github.com/andrewwormald/syntropy/internal/runner/openhands"
 	"github.com/andrewwormald/syntropy/internal/setup"
 	"github.com/andrewwormald/syntropy/internal/spec"
 	"github.com/andrewwormald/syntropy/internal/store"
@@ -204,17 +205,18 @@ func unsetNestedClaudeCodeEnv() {
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		storePath         = fs.String("store", "", "path to sqlite store (default ~/.syntropy/store.db; pass ':memory:' for volatile)")
-		listenAddr        = fs.String("listen", ":8080", "address for the webhook HTTP server")
-		publicBaseURL     = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
-		gitlabBaseURL     = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
-		githubBaseURL     = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
-		triggerAddr       = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `syntropy start`)")
-		commitAuthor      = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
-		commitEmail       = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
-		stuckThreshold    = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
-		retriggerCooldown = fs.Duration("reconciler-retrigger-cooldown", reconcilerRetriggerCooldownDefault, "how long a Run is left alone after the reconciler re-triggers it before it can be re-triggered again")
-		retentionPeriod   = fs.Duration("retention-period", retentionPeriodDefault, "how long a terminal (completed/cancelled) Run's records and on-disk run directory are kept before the retention sweep deletes them; 0 disables the sweep (see ADR-0071)")
+		storePath               = fs.String("store", "", "path to sqlite store (default ~/.syntropy/store.db; pass ':memory:' for volatile)")
+		listenAddr              = fs.String("listen", ":8080", "address for the webhook HTTP server")
+		publicBaseURL           = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
+		gitlabBaseURL           = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+		githubBaseURL           = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
+		triggerAddr             = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `syntropy start`)")
+		commitAuthor            = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
+		commitEmail             = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
+		openhandsAgentServerURL = fs.String("openhands-agent-server-url", "", "enables the openhands execution runner (ADR-0112); planning stays claude-only regardless")
+		stuckThreshold          = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
+		retriggerCooldown       = fs.Duration("reconciler-retrigger-cooldown", reconcilerRetriggerCooldownDefault, "how long a Run is left alone after the reconciler re-triggers it before it can be re-triggered again")
+		retentionPeriod         = fs.Duration("retention-period", retentionPeriodDefault, "how long a terminal (completed/cancelled) Run's records and on-disk run directory are kept before the retention sweep deletes them; 0 disables the sweep (see ADR-0071)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -261,8 +263,7 @@ func cmdDaemon(args []string) error {
 	if err := rehydrateSecrets(context.Background(), recordStore, secrets, logger); err != nil {
 		logger.Warn("secret rehydration encountered errors; some Runs may have empty registry entries", "err", err)
 	}
-	runners := runner.NewRegistry()
-	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
+	runners := buildRunners(logger, *openhandsAgentServerURL)
 
 	// Planning is structurally Claude-only (see refactorsweep.plannerRunnerName):
 	// a separate registry keeps discoverSpec from ever resolving an execution
@@ -510,6 +511,22 @@ func isActiveStatus(s refactorsweep.AgentStatus) bool {
 		return false
 	}
 	return true
+}
+
+// buildRunners registers the daemon's execution-runner registry (used by
+// work()/invokeForEvent(), never discoverSpec() — see plannerRunners in
+// cmdDaemon). claude is always registered; openhands is opt-in, registered
+// only when openhandsAgentServerURL is non-empty, mirroring buildProviders'
+// conditional-credential pattern below (ADR-0112 §4).
+func buildRunners(logger *slog.Logger, openhandsAgentServerURL string) *runner.Registry {
+	runners := runner.NewRegistry()
+	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
+
+	if openhandsAgentServerURL != "" {
+		runners.Register(openhands.NewRunner(""))
+		logger.Info("runner registered", "name", "openhands", "agent_server_url", openhandsAgentServerURL)
+	}
+	return runners
 }
 
 // buildProviders registers providers from credentials. For GitLab we try
