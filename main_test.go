@@ -908,6 +908,42 @@ func TestCheckRepoConfig_ReportsRegisteredRunners(t *testing.T) {
 	}
 }
 
+// TestCmdConfig_RunnersReflectOpenhandsServerBinaryFlag asserts cmdConfig
+// only reports openhands as registered when its own
+// --openhands-server-binary flag is set, mirroring cmdDaemon's buildRunners
+// gating — cmdConfig is a separate CLI invocation with no visibility into
+// what a live daemon actually registered, so it must not hardcode "both
+// always available".
+func TestCmdConfig_RunnersReflectOpenhandsServerBinaryFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Runners: claude\n") {
+			t.Errorf("got %q, want only claude registered when --openhands-server-binary is unset", out)
+		}
+	})
+
+	t.Run("set", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Runners: claude, openhands") {
+			t.Errorf("got %q, want openhands registered when --openhands-server-binary is set", out)
+		}
+	})
+}
+
 // --- config check: effective spec tool (ADR-0099's deferred consumption) ---
 
 func TestCheckRepoConfig_SpecTool_NeitherSet_ReportsSyntropyDefault(t *testing.T) {

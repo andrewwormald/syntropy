@@ -2186,6 +2186,7 @@ func cmdConfig(args []string) error {
 	case "check":
 		fs := flag.NewFlagSet("config check", flag.ExitOnError)
 		repoFlag := fs.String("repo", "", "repo root to check (default: current directory)")
+		openhandsServerBinary := fs.String("openhands-server-binary", "", "report the openhands runner as registered — must match the running daemon's own --openhands-server-binary flag")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -2197,9 +2198,7 @@ func cmdConfig(args []string) error {
 				return fmt.Errorf("cwd: %w", err)
 			}
 		}
-		runners := runner.NewRegistry()
-		runners.Register(claude.NewRunner(""))
-		runners.Register(openhands.NewRunner(""))
+		runners := buildRunners(slog.New(slog.NewTextHandler(io.Discard, nil)), *openhandsServerBinary)
 		missing, err := checkRepoConfig(repoDir, os.Stdout, runners)
 		if err != nil {
 			return err
