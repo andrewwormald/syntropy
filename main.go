@@ -345,7 +345,7 @@ func cmdDaemon(args []string) error {
 	}
 
 	localMux := http.NewServeMux()
-	localMux.HandleFunc("/trigger", triggerHandler(wf, logger))
+	localMux.HandleFunc("/trigger", triggerHandler(wf, runners, logger))
 	localMux.HandleFunc("/status", statusHandler(recordStore, logger))
 	localMux.HandleFunc("/control", controlHandler(wf, recordStore, logger))
 	localSrv := &http.Server{
@@ -683,7 +683,7 @@ func buildInitialAgentState(req triggerRequest) *refactorsweep.AgentState {
 // triggerHandler validates the request, builds an AgentState, calls
 // wf.Trigger, and responds with the assigned run ID. Used only on the
 // localhost-only trigger listener (ADR-0028).
-func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorsweep.AgentStatus], logger *slog.Logger) http.HandlerFunc {
+func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorsweep.AgentStatus], runners *runner.Registry, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "use POST", http.StatusMethodNotAllowed)
@@ -696,6 +696,10 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 		}
 		if req.ProviderName == "" || req.ProjectID == "" || req.RunnerName == "" {
 			http.Error(w, "provider, project, and runner are required", http.StatusBadRequest)
+			return
+		}
+		if _, err := runners.Get(req.RunnerName); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if req.Mode == "" {

@@ -24,6 +24,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/provider"
 	"github.com/andrewwormald/syntropy/internal/refactorsweep"
 	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/runner/claude"
 	"github.com/andrewwormald/syntropy/internal/store"
 )
 
@@ -1575,6 +1576,38 @@ func TestBuildInitialAgentState_AdoptPath_IsCleanSlate(t *testing.T) {
 	mr := state.InFlight["svc-x"]
 	if mr.ProjectID != "acme/example" || mr.IID != 42 || mr.Branch != "feature-x" {
 		t.Errorf("InFlight[svc-x]: got %+v", mr)
+	}
+}
+
+// TestTriggerHandler_UnknownRunnerRejected asserts /trigger rejects a
+// runner name that isn't registered before ever reaching wf.Trigger — an
+// unknown runner would otherwise only surface much later, deep inside a
+// Run, as an opaque runners.Get error.
+func TestTriggerHandler_UnknownRunnerRejected(t *testing.T) {
+	registry := runner.NewRegistry()
+	registry.Register(claude.NewRunner(""))
+
+	handler := triggerHandler(nil, registry, discardLogger())
+
+	body, err := json.Marshal(triggerRequest{
+		ProviderName: "gitlab",
+		ProjectID:    "acme/example",
+		RunnerName:   "nonexistent",
+		SpecBody:     "do the thing",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/trigger", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status code: got %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown runner") {
+		t.Errorf("body: got %q, want it to mention the unknown runner", rec.Body.String())
 	}
 }
 
