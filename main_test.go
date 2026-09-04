@@ -420,7 +420,7 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 }
 
 // TestBuildRunners_OpenHandsOptIn asserts openhands is only registered when
-// --openhands-agent-server-url is set — claude is always present regardless.
+// --openhands-server-binary is set — claude is always present regardless.
 func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 	logger := discardLogger()
 
@@ -429,15 +429,15 @@ func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 		t.Errorf("claude should always be registered: %v", err)
 	}
 	if _, err := runners.Get("openhands"); err == nil {
-		t.Errorf("openhands should not be registered when --openhands-agent-server-url is unset")
+		t.Errorf("openhands should not be registered when --openhands-server-binary is unset")
 	}
 
-	runners = buildRunners(logger, "http://127.0.0.1:9999")
+	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server")
 	if _, err := runners.Get("claude"); err != nil {
 		t.Errorf("claude should still be registered: %v", err)
 	}
 	if rn, err := runners.Get("openhands"); err != nil {
-		t.Errorf("openhands should be registered when --openhands-agent-server-url is set: %v", err)
+		t.Errorf("openhands should be registered when --openhands-server-binary is set: %v", err)
 	} else if rn.Name() != "openhands" {
 		t.Errorf("Name() = %q, want %q", rn.Name(), "openhands")
 	}
@@ -456,8 +456,8 @@ func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 func TestBuildRunners_SpecOmittingRunnerStillResolvesToClaude(t *testing.T) {
 	logger := discardLogger()
 
-	// Both runners registered, as if --openhands-agent-server-url was set.
-	runners := buildRunners(logger, "http://127.0.0.1:9999")
+	// Both runners registered, as if --openhands-server-binary was set.
+	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server")
 	if len(runners.Names()) != 2 {
 		t.Fatalf("want both claude and openhands registered; got %v", runners.Names())
 	}
