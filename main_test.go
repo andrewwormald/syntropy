@@ -25,8 +25,19 @@ import (
 	"github.com/andrewwormald/syntropy/internal/refactorsweep"
 	"github.com/andrewwormald/syntropy/internal/runner"
 	"github.com/andrewwormald/syntropy/internal/runner/claude"
+	"github.com/andrewwormald/syntropy/internal/runner/openhands"
 	"github.com/andrewwormald/syntropy/internal/store"
 )
+
+// testCheckRepoConfigRunners builds the runner registry checkRepoConfig
+// tests pass in, mirroring cmdConfig's own registration so Runners: output
+// assertions reflect what a real invocation would print.
+func testCheckRepoConfigRunners() *runner.Registry {
+	runners := runner.NewRegistry()
+	runners.Register(claude.NewRunner(""))
+	runners.Register(openhands.NewRunner(""))
+	return runners
+}
 
 // captureStdout redirects os.Stdout to a pipe and returns a function that
 // restores it and returns the captured output as a string.
@@ -815,7 +826,7 @@ func TestCmdSetup_RepoSpecToolFlagPersists(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	missing, err := checkRepoConfig(".", &buf)
+	missing, err := checkRepoConfig(".", &buf, testCheckRepoConfigRunners())
 	if err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
@@ -830,7 +841,7 @@ func TestCheckRepoConfig_AbsentFile_ReportsMissing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	var buf bytes.Buffer
-	missing, err := checkRepoConfig(dir, &buf)
+	missing, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners())
 	if err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
@@ -849,7 +860,7 @@ func TestCheckRepoConfig_RealValue_ReportsOK(t *testing.T) {
 		t.Fatalf("seed .syntropy.yml: %v", err)
 	}
 	var buf bytes.Buffer
-	missing, err := checkRepoConfig(dir, &buf)
+	missing, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners())
 	if err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
@@ -871,7 +882,7 @@ func TestCheckRepoConfig_BlankSentinel_ReportsOK(t *testing.T) {
 		t.Fatalf("seed .syntropy.yml: %v", err)
 	}
 	var buf bytes.Buffer
-	missing, err := checkRepoConfig(dir, &buf)
+	missing, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners())
 	if err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
@@ -883,13 +894,63 @@ func TestCheckRepoConfig_BlankSentinel_ReportsOK(t *testing.T) {
 	}
 }
 
+// --- config check: registered runners ---
+
+func TestCheckRepoConfig_ReportsRegisteredRunners(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	if _, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners()); err != nil {
+		t.Fatalf("checkRepoConfig: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Runners: claude, openhands") {
+		t.Errorf("got %q, want it to report the registered runners", buf.String())
+	}
+}
+
+// TestCmdConfig_RunnersReflectOpenhandsServerBinaryFlag asserts cmdConfig
+// only reports openhands as registered when its own
+// --openhands-server-binary flag is set, mirroring cmdDaemon's buildRunners
+// gating — cmdConfig is a separate CLI invocation with no visibility into
+// what a live daemon actually registered, so it must not hardcode "both
+// always available".
+func TestCmdConfig_RunnersReflectOpenhandsServerBinaryFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Runners: claude\n") {
+			t.Errorf("got %q, want only claude registered when --openhands-server-binary is unset", out)
+		}
+	})
+
+	t.Run("set", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Runners: claude, openhands") {
+			t.Errorf("got %q, want openhands registered when --openhands-server-binary is set", out)
+		}
+	})
+}
+
 // --- config check: effective spec tool (ADR-0099's deferred consumption) ---
 
 func TestCheckRepoConfig_SpecTool_NeitherSet_ReportsSyntropyDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	var buf bytes.Buffer
-	if _, err := checkRepoConfig(dir, &buf); err != nil {
+	if _, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners()); err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Spec tool: (none set — syntropy's own default spec flow)") {
@@ -905,7 +966,7 @@ func TestCheckRepoConfig_SpecTool_GlobalOnly_ReportsGlobalDefault(t *testing.T) 
 	}
 	dir := t.TempDir()
 	var buf bytes.Buffer
-	if _, err := checkRepoConfig(dir, &buf); err != nil {
+	if _, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners()); err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Spec tool: spec-kit (global default)") {
@@ -924,7 +985,7 @@ func TestCheckRepoConfig_SpecTool_RepoOverride_TakesPrecedenceOverGlobal(t *test
 		t.Fatalf("seed .syntropy.yml: %v", err)
 	}
 	var buf bytes.Buffer
-	if _, err := checkRepoConfig(dir, &buf); err != nil {
+	if _, err := checkRepoConfig(dir, &buf, testCheckRepoConfigRunners()); err != nil {
 		t.Fatalf("checkRepoConfig: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Spec tool: other-tool (repo override)") {
