@@ -264,6 +264,12 @@ func cmdDaemon(args []string) error {
 	runners := runner.NewRegistry()
 	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
 
+	// Planning is structurally Claude-only (see refactorsweep.plannerRunnerName):
+	// a separate registry keeps discoverSpec from ever resolving an execution
+	// runner (e.g. openhands) even if a spec's RunnerName is set to one.
+	plannerRunners := runner.NewRegistry()
+	plannerRunners.Register(claude.NewRunner(""))
+
 	// Commit author falls back to the host's git config when blank — which is
 	// what we want when pushing to a shared repo where the platform expects
 	// verified email addresses. Override via --commit-author / --commit-email
@@ -272,16 +278,17 @@ func cmdDaemon(args []string) error {
 
 	eventStreamer := eventstream.New(backend.DB())
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
-		RecordStore:   recordStore,
-		TimeoutStore:  timeoutStore,
-		EventStreamer: eventStreamer,
-		RoleScheduler: memrolescheduler.New(),
-		Providers:     providers,
-		Runners:       runners,
-		Git:           gitClient,
-		Secrets:       secrets,
-		PublicBaseURL: *publicBaseURL,
-		RunsRoot:      runsRoot,
+		RecordStore:    recordStore,
+		TimeoutStore:   timeoutStore,
+		EventStreamer:  eventStreamer,
+		RoleScheduler:  memrolescheduler.New(),
+		Providers:      providers,
+		Runners:        runners,
+		PlannerRunners: plannerRunners,
+		Git:            gitClient,
+		Secrets:        secrets,
+		PublicBaseURL:  *publicBaseURL,
+		RunsRoot:       runsRoot,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

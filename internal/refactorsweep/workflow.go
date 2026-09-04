@@ -43,13 +43,14 @@ type Deps struct {
 	RoleScheduler workflow.RoleScheduler
 
 	// everflow-specific dependencies for the step bodies
-	Providers     map[string]provider.Provider // by name; populated at daemon start
-	Runners       *runner.Registry             // by name; agents (claude, qwen, openhands)
-	Filter        filter.Filter                // Starlark filter; nil = StubFilter
-	Git           git.Git                      // git CLI wrapper; required for work() + invokeForEvent
-	Secrets       *webhook.SecretRegistry      // per-(provider, runID) HMAC/token secrets
-	PublicBaseURL string                       // e.g. https://everflow.example.com
-	RunsRoot      string                       // e.g. ~/.syntropy/runs
+	Providers      map[string]provider.Provider // by name; populated at daemon start
+	Runners        *runner.Registry             // by name; agents (claude, qwen, openhands); execution only (work/invokeForEvent)
+	PlannerRunners *runner.Registry             // by name; planning only (discoverSpec) — always resolved via plannerRunnerName, never r.Object.RunnerName
+	Filter         filter.Filter                // Starlark filter; nil = StubFilter
+	Git            git.Git                      // git CLI wrapper; required for work() + invokeForEvent
+	Secrets        *webhook.SecretRegistry      // per-(provider, runID) HMAC/token secrets
+	PublicBaseURL  string                       // e.g. https://everflow.example.com
+	RunsRoot       string                       // e.g. ~/.syntropy/runs
 }
 
 // stepErrBackOff is the delay the workflow library waits before retrying a
@@ -69,6 +70,13 @@ const stepErrBackOff = 45 * time.Second
 // transient blip (a dropped connection, one rate-limited request) without
 // letting a systematically-broken step run unattended for tens of minutes.
 const stepPauseAfterErrCount = 6
+
+// plannerRunnerName is the only runner discoverSpec will ever use. Planning
+// is structurally Claude-only: it must not resolve to whatever runner a
+// spec's execution steps (work/invokeForEvent) are configured with, so it's
+// looked up in Deps.PlannerRunners by this fixed name, never from
+// r.Object.RunnerName.
+const plannerRunnerName = "claude"
 
 // Build wires the state machine described in DESIGN.md. Step bodies are
 // closures over d so they have access to providers, secrets, etc.
@@ -473,10 +481,10 @@ func (d *Deps) discoverSweep(ctx context.Context, r *workflow.Run[AgentState, Ag
 // happens implicitly in work() (the runner does the change, git checks
 // HasChanges, the gate proves it's real).
 func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
-	if d.Runners == nil {
-		return StatusFailed, fmt.Errorf("discover: no Runners configured (spec mode requires a planner)")
+	if d.PlannerRunners == nil {
+		return StatusFailed, fmt.Errorf("discover: no PlannerRunners configured (spec mode requires a planner)")
 	}
-	rn, err := d.Runners.Get(r.Object.RunnerName)
+	rn, err := d.PlannerRunners.Get(plannerRunnerName)
 	if err != nil {
 		return StatusFailed, fmt.Errorf("discover: runner: %w", err)
 	}
