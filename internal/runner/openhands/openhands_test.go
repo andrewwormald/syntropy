@@ -19,17 +19,17 @@ func TestName(t *testing.T) {
 	if r.Name() != "openhands" {
 		t.Errorf("Name() = %q, want %q", r.Name(), "openhands")
 	}
-	if r.Binary != "openhands-agent-server" {
-		t.Errorf("default Binary = %q, want %q", r.Binary, "openhands-agent-server")
+	if r.Binary != "agent-server" {
+		t.Errorf("default Binary = %q, want %q", r.Binary, "agent-server")
 	}
 }
 
 // mockAgentServer builds an httptest.Server implementing just enough of the
 // Agent Server surface (POST /api/conversations, POST .../run, GET
-// /api/conversations/{id}, GET .../events/search) for converse() to drive
-// end to end. statuses is the sequence of execution_status values returned
-// on successive GET /api/conversations/{id} calls (the last value repeats
-// once exhausted); finalMessage is the text of the last MessageEvent.
+// /api/conversations/{id}, GET .../agent_final_response) for converse() to
+// drive end to end. statuses is the sequence of execution_status values
+// returned on successive GET /api/conversations/{id} calls (the last value
+// repeats once exhausted); finalMessage is the agent's final response text.
 func mockAgentServer(t *testing.T, statuses []string, finalMessage string) (*httptest.Server, *[]string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -48,11 +48,11 @@ func mockAgentServer(t *testing.T, statuses []string, finalMessage string) (*htt
 		mu.Lock()
 		gotWorkingDir = append(gotWorkingDir, body.Workspace.WorkingDir)
 		mu.Unlock()
-		if body.ConfirmationPolicy.Kind != "auto_approve" {
-			t.Errorf("ConfirmationPolicy.Kind = %q, want auto_approve", body.ConfirmationPolicy.Kind)
+		if body.ConfirmationPolicy.Kind != "NeverConfirm" {
+			t.Errorf("ConfirmationPolicy.Kind = %q, want NeverConfirm", body.ConfirmationPolicy.Kind)
 		}
-		if body.InitialMessage == "" {
-			t.Error("InitialMessage should not be empty")
+		if len(body.InitialMessage.Content) == 0 || body.InitialMessage.Content[0].Text == "" {
+			t.Error("InitialMessage.Content should not be empty")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(createConversationResponse{ID: "conv-1"})
@@ -63,20 +63,9 @@ func mockAgentServer(t *testing.T, statuses []string, finalMessage string) (*htt
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/api/conversations/conv-1/events/search", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/api/conversations/conv-1/agent_final_response", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(eventsSearchResponse{
-			Items: []eventEnvelope{
-				{Kind: "ActionEvent"},
-				{
-					Kind: "MessageEvent",
-					Message: &eventMessage{
-						Role:    "assistant",
-						Content: []contentPart{{Type: "text", Text: finalMessage}},
-					},
-				},
-			},
-		})
+		json.NewEncoder(w).Encode(agentFinalResponse{Response: finalMessage})
 	})
 	mux.HandleFunc("/api/conversations/conv-1", func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
@@ -136,17 +125,17 @@ func TestConverse_ErrorStatusStillParsesDecision(t *testing.T) {
 	}
 }
 
-func TestConverse_AwaitingUserInputIsRunnerError(t *testing.T) {
-	srv, _ := mockAgentServer(t, []string{statusAwaitingUserInput}, "irrelevant")
+func TestConverse_WaitingForConfirmationIsRunnerError(t *testing.T) {
+	srv, _ := mockAgentServer(t, []string{statusWaitingForConfirmation}, "irrelevant")
 	defer srv.Close()
 
 	r := testRunner()
 	_, err := r.converse(context.Background(), srv.URL, runner.Request{Worktree: "/tmp/w", Goal: "goal"})
 	if err == nil {
-		t.Fatal("expected an error for awaiting_user_input")
+		t.Fatal("expected an error for waiting_for_confirmation")
 	}
-	if !strings.Contains(err.Error(), "awaiting_user_input") {
-		t.Errorf("error = %v, want it to mention awaiting_user_input", err)
+	if !strings.Contains(err.Error(), "waiting_for_confirmation") {
+		t.Errorf("error = %v, want it to mention waiting_for_confirmation", err)
 	}
 }
 
@@ -161,7 +150,7 @@ func TestConverse_NoDecisionMarker(t *testing.T) {
 	}
 }
 
-func TestConverse_NoMessageEvent(t *testing.T) {
+func TestConverse_EmptyFinalResponse(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -170,9 +159,9 @@ func TestConverse_NoMessageEvent(t *testing.T) {
 	mux.HandleFunc("/api/conversations/conv-1/run", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/api/conversations/conv-1/events/search", func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/api/conversations/conv-1/agent_final_response", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(eventsSearchResponse{Items: []eventEnvelope{{Kind: "ActionEvent"}}})
+		json.NewEncoder(w).Encode(agentFinalResponse{Response: ""})
 	})
 	mux.HandleFunc("/api/conversations/conv-1", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -184,7 +173,7 @@ func TestConverse_NoMessageEvent(t *testing.T) {
 	r := testRunner()
 	_, err := r.converse(context.Background(), srv.URL, runner.Request{Worktree: "/tmp/w", Goal: "goal"})
 	if err == nil {
-		t.Fatal("expected an error when no MessageEvent is present")
+		t.Fatal("expected an error when agent_final_response is empty")
 	}
 }
 
@@ -287,17 +276,6 @@ func TestFreePort(t *testing.T) {
 	}
 	if p <= 0 || p > 65535 {
 		t.Errorf("freePort() = %d, out of range", p)
-	}
-}
-
-func TestEventMessageText(t *testing.T) {
-	var m *eventMessage
-	if got := m.text(); got != "" {
-		t.Errorf("nil message text = %q, want empty", got)
-	}
-	m = &eventMessage{Content: []contentPart{{Text: "a"}, {Text: "b"}}}
-	if got := m.text(); got != "a\nb" {
-		t.Errorf("text() = %q, want %q", got, "a\nb")
 	}
 }
 

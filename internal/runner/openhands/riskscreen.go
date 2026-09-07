@@ -111,9 +111,9 @@ func (r *Runner) attemptScreenComment(ctx context.Context, baseURL, body string)
 		return "", "", fmt.Errorf("openhands risk screen: conversation ended with status %q, want %q", status, statusFinished)
 	}
 
-	text, err := r.lastMessageText(ctx, baseURL, convID)
+	text, err := r.finalResponseText(ctx, baseURL, convID)
 	if err != nil {
-		return "", "", fmt.Errorf("openhands risk screen: fetch events: %w", err)
+		return "", "", fmt.Errorf("openhands risk screen: fetch final response: %w", err)
 	}
 
 	v, r2, ok := parseRiskVerdict(text)

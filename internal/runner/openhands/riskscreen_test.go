@@ -46,21 +46,11 @@ func mockScreenServer(t *testing.T, responses []string) *httptest.Server {
 		switch {
 		case strings.HasSuffix(id, "/run"):
 			w.WriteHeader(http.StatusOK)
-		case strings.HasSuffix(id, "/events/search"):
-			convID := strings.TrimSuffix(id, "/events/search")
+		case strings.HasSuffix(id, "/agent_final_response"):
+			convID := strings.TrimSuffix(id, "/agent_final_response")
 			idx := indexForConvID(convID)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(eventsSearchResponse{
-				Items: []eventEnvelope{
-					{
-						Kind: "MessageEvent",
-						Message: &eventMessage{
-							Role:    "assistant",
-							Content: []contentPart{{Type: "text", Text: responseFor(responses, idx)}},
-						},
-					},
-				},
-			})
+			json.NewEncoder(w).Encode(agentFinalResponse{Response: responseFor(responses, idx)})
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(conversationInfo{ID: id, ExecutionStatus: statusFinished})
@@ -234,10 +224,11 @@ func TestScreenComment_ExhaustsRetriesBeforeFailingClosed(t *testing.T) {
 }
 
 // TestAttemptScreenComment_NonFinishedStatus_IsAnError covers the
-// awaiting_user_input/error/stopped terminal statuses: since the screening
-// conversation has nothing to confirm (it does no tool calls), reaching one
-// of those instead of "finished" means something went wrong, so it must be
-// treated as a failed attempt rather than parsed as a verdict.
+// waiting_for_confirmation/error/stuck/deleting terminal statuses: since the
+// screening conversation has nothing to confirm (it does no tool calls),
+// reaching one of those instead of "finished" means something went wrong,
+// so it must be treated as a failed attempt rather than parsed as a
+// verdict.
 func TestAttemptScreenComment_NonFinishedStatus_IsAnError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, req *http.Request) {
