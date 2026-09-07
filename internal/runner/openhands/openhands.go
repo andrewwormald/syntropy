@@ -90,6 +90,14 @@ type Runner struct {
 	// HTTPClient is used for all Agent Server calls. Defaults to a client
 	// with a 30s per-request timeout if nil.
 	HTTPClient *http.Client
+
+	// APIKey is the LLM provider API key sent to the Agent Server as
+	// agent.llm.api_key on every conversation it creates.
+	APIKey string
+
+	// BaseURL, if set, overrides the LLM provider endpoint sent to the
+	// Agent Server as agent.llm.base_url.
+	BaseURL string
 }
 
 // NewRunner constructs a Runner. All arguments are optional.
@@ -332,7 +340,9 @@ type agentConfig struct {
 }
 
 type llmConfig struct {
-	Model string `json:"model,omitempty"`
+	Model   string `json:"model,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 type workspaceConfig struct {
@@ -368,7 +378,7 @@ type createConversationResponse struct {
 
 func (r *Runner) createConversation(ctx context.Context, baseURL string, req runner.Request, initialMessageText string) (string, error) {
 	payload := createConversationRequest{
-		Agent: agentConfig{LLM: llmConfig{Model: req.Model}},
+		Agent: agentConfig{LLM: llmConfig{Model: req.Model, APIKey: r.APIKey, BaseURL: r.BaseURL}},
 		Workspace: workspaceConfig{
 			Kind:       "LocalWorkspace",
 			WorkingDir: req.Worktree,

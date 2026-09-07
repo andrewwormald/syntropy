@@ -4,6 +4,7 @@
 
 # local test artifacts
 /tmp/
+/workspace/
 *.test
 coverage.out
 cover.out
