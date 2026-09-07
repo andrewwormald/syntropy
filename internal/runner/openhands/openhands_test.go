@@ -3,6 +3,7 @@ package openhands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -136,6 +137,39 @@ func TestConverse_WaitingForConfirmationIsRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "waiting_for_confirmation") {
 		t.Errorf("error = %v, want it to mention waiting_for_confirmation", err)
+	}
+}
+
+func TestConverse_PausedIsRunnerError(t *testing.T) {
+	srv, _ := mockAgentServer(t, []string{statusPaused}, "irrelevant")
+	defer srv.Close()
+
+	r := testRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := r.converse(ctx, srv.URL, runner.Request{Worktree: "/tmp/w", Goal: "goal"})
+	if err == nil {
+		t.Fatal("expected an error for paused")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("converse polled forever instead of treating paused as terminal")
+	}
+	if !strings.Contains(err.Error(), "paused") {
+		t.Errorf("error = %v, want it to mention paused", err)
+	}
+}
+
+func TestConverse_DeletingIsRunnerError(t *testing.T) {
+	srv, _ := mockAgentServer(t, []string{statusDeleting}, "irrelevant")
+	defer srv.Close()
+
+	r := testRunner()
+	_, err := r.converse(context.Background(), srv.URL, runner.Request{Worktree: "/tmp/w", Goal: "goal"})
+	if err == nil {
+		t.Fatal("expected an error for deleting")
+	}
+	if !strings.Contains(err.Error(), "deleting") {
+		t.Errorf("error = %v, want it to mention deleting", err)
 	}
 }
 
