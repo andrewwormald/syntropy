@@ -1,6 +1,6 @@
 # ADR-0112: OpenHands runner — per-Run Agent Server subprocess, reused decision-marker protocol, planning stays Claude-only
 
-**Status**: Accepted
+**Status**: Accepted (endpoint-shape details amended by [ADR-0113](0113-openhands-agent-server-schema-corrections.md))
 **Date**: 2026-09-03
 
 ## Context
