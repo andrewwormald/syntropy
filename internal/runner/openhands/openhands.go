@@ -5,16 +5,24 @@
 // claude.ParseDecision, a package-local prompt built by BuildPrompt (see
 // prompt.go — it ports claude.BuildPrompt's section structure but adds an
 // OpenHands-specific never-push/never-call-provider-API instruction, since
-// the Agent Server's auto-approve confirmation policy may grant broader
-// tool access than Claude Code's --dangerously-skip-permissions sandbox),
-// and confirmation policy forced to auto-approve so tool calls never pause
-// for human confirmation.
+// the Agent Server's confirmation policy may grant broader tool access than
+// Claude Code's --dangerously-skip-permissions sandbox), and confirmation
+// policy forced to "NeverConfirm" so tool calls never pause for human
+// confirmation.
 //
-// The Agent Server endpoint shapes assumed here (payload/response field
-// names) are best-effort against OpenHands' published OpenAPI schema as of
-// ADR-0112 — they have not been confirmed against a real running
-// openhands-agent-server. Per this repo's local-test-gate practice, no
-// tagged release should ship this adapter until that confirmation happens.
+// The Agent Server endpoint shapes here were confirmed against a real
+// locally running openhands-agent-server v1.44.1 (2026-09-07), correcting
+// several mismatches ADR-0112's desk research got wrong: the installed
+// console script is named "agent-server", not "openhands-agent-server";
+// initial_message is a SendMessageRequest object, not a bare string;
+// confirmation_policy's kind is "NeverConfirm", not "auto_approve";
+// ConversationExecutionStatus's real values are idle/running/paused/
+// waiting_for_confirmation/finished/error/stuck/deleting (no "stopped",
+// and the confirmation-pause state is "waiting_for_confirmation" not
+// "awaiting_user_input"); and the agent's final reply is read via the
+// dedicated GET .../agent_final_response endpoint rather than by
+// hand-parsing the events/search discriminated union (whose message
+// payload lives under "llm_message", not "message").
 package openhands
 
 import (
@@ -36,22 +44,31 @@ import (
 	"github.com/andrewwormald/syntropy/internal/runner/claude"
 )
 
-// Execution status values from ConversationExecutionStatus (ADR-0112).
+// Execution status values from ConversationExecutionStatus, confirmed
+// against a real running openhands-agent-server (v1.44.1): idle, running,
+// paused, waiting_for_confirmation, finished, error, stuck, deleting. There
+// is no "stopped" value and the confirmation-pause state is named
+// "waiting_for_confirmation", not "awaiting_user_input" — both corrected
+// here from ADR-0112's desk-research assumption.
 const (
-	statusRunning           = "running"
-	statusStopped           = "stopped"
-	statusFinished          = "finished"
-	statusError             = "error"
-	statusPaused            = "paused"
-	statusAwaitingUserInput = "awaiting_user_input"
+	statusIdle                   = "idle"
+	statusRunning                = "running"
+	statusPaused                 = "paused"
+	statusWaitingForConfirmation = "waiting_for_confirmation"
+	statusFinished               = "finished"
+	statusError                  = "error"
+	statusStuck                  = "stuck"
+	statusDeleting               = "deleting"
 )
 
 // Runner implements runner.Runner. The zero value is usable (uses
-// "openhands-agent-server" from $PATH with default timeouts). NewRunner is
+// "agent-server" from $PATH with default timeouts). NewRunner is
 // the canonical constructor.
 type Runner struct {
 	// Binary is the path to the openhands-agent-server executable (or a
-	// wrapper script). Defaults to "openhands-agent-server".
+	// wrapper script). Defaults to "agent-server" — the actual console-script
+	// name the openhands-agent-server PyPI package installs; there is no
+	// script literally named "openhands-agent-server".
 	Binary string
 
 	// ExtraArgs is appended to the subprocess argv, after the required
@@ -78,7 +95,7 @@ type Runner struct {
 // NewRunner constructs a Runner. All arguments are optional.
 func NewRunner(binary string, extraArgs ...string) *Runner {
 	if binary == "" {
-		binary = "openhands-agent-server"
+		binary = "agent-server"
 	}
 	return &Runner{Binary: binary, ExtraArgs: extraArgs}
 }
@@ -144,17 +161,17 @@ func (r *Runner) converse(ctx context.Context, baseURL string, req runner.Reques
 		return runner.Response{}, fmt.Errorf("openhands: poll conversation: %w", err)
 	}
 
-	// awaiting_user_input fires from the confirmation-policy mechanism,
-	// which is disabled by createConversation's auto-approve policy. If we
+	// waiting_for_confirmation fires from the confirmation-policy mechanism,
+	// which is disabled by createConversation's NeverConfirm policy. If we
 	// see it anyway, it's a runner-level error, not a DecisionAsk — those
 	// are two different concepts (ADR-0112 §3).
-	if status == statusAwaitingUserInput {
-		return runner.Response{}, fmt.Errorf("openhands: conversation %s paused awaiting_user_input; treated as a runner error, not DecisionAsk (ADR-0112 §3)", convID)
+	if status == statusWaitingForConfirmation {
+		return runner.Response{}, fmt.Errorf("openhands: conversation %s paused waiting_for_confirmation; treated as a runner error, not DecisionAsk (ADR-0112 §3)", convID)
 	}
 
-	text, err := r.lastMessageText(ctx, baseURL, convID)
+	text, err := r.finalResponseText(ctx, baseURL, convID)
 	if err != nil {
-		return runner.Response{}, fmt.Errorf("openhands: fetch events: %w", err)
+		return runner.Response{}, fmt.Errorf("openhands: fetch final response: %w", err)
 	}
 
 	titleUpdate := claude.ParseTitleUpdate(text)
@@ -199,7 +216,7 @@ func freePort() (int, error) {
 func (r *Runner) spawnServer(port int, workdir string) (*exec.Cmd, error) {
 	binary := r.Binary
 	if binary == "" {
-		binary = "openhands-agent-server"
+		binary = "agent-server"
 	}
 	args := append([]string{"--host", "127.0.0.1", "--port", strconv.Itoa(port)}, r.ExtraArgs...)
 	cmd := exec.Command(binary, args...)
@@ -306,7 +323,7 @@ func (r *Runner) doJSON(ctx context.Context, method, url string, body, out any) 
 type createConversationRequest struct {
 	Agent              agentConfig        `json:"agent"`
 	Workspace          workspaceConfig    `json:"workspace"`
-	InitialMessage     string             `json:"initial_message"`
+	InitialMessage     initialMessage     `json:"initial_message"`
 	ConfirmationPolicy confirmationPolicy `json:"confirmation_policy"`
 }
 
@@ -323,10 +340,24 @@ type workspaceConfig struct {
 	WorkingDir string `json:"working_dir"`
 }
 
+// initialMessage is a SendMessageRequest, not a bare string — confirmed
+// against a real running openhands-agent-server, which rejects a plain
+// string with "Input should be a valid dictionary or object".
+type initialMessage struct {
+	Content []contentPart `json:"content"`
+}
+
+type contentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 // confirmationPolicy is set to never pause for human confirmation of tool
 // calls — ADR-0112 §3, same reasoning as ADR-0027 §4's unconditional
 // --dangerously-skip-permissions: inside the worktree, autonomous tool use
-// is the accepted risk.
+// is the accepted risk. "NeverConfirm" is the real ConfirmationPolicyBase
+// discriminator value; the server rejects "auto_approve" with "Unknown
+// kind".
 type confirmationPolicy struct {
 	Kind string `json:"kind"`
 }
@@ -335,15 +366,15 @@ type createConversationResponse struct {
 	ID string `json:"id"`
 }
 
-func (r *Runner) createConversation(ctx context.Context, baseURL string, req runner.Request, initialMessage string) (string, error) {
+func (r *Runner) createConversation(ctx context.Context, baseURL string, req runner.Request, initialMessageText string) (string, error) {
 	payload := createConversationRequest{
 		Agent: agentConfig{LLM: llmConfig{Model: req.Model}},
 		Workspace: workspaceConfig{
 			Kind:       "LocalWorkspace",
 			WorkingDir: req.Worktree,
 		},
-		InitialMessage:     initialMessage,
-		ConfirmationPolicy: confirmationPolicy{Kind: "auto_approve"},
+		InitialMessage:     initialMessage{Content: []contentPart{{Type: "text", Text: initialMessageText}}},
+		ConfirmationPolicy: confirmationPolicy{Kind: "NeverConfirm"},
 	}
 	var out createConversationResponse
 	if err := r.doJSON(ctx, http.MethodPost, baseURL+"/api/conversations", payload, &out); err != nil {
@@ -366,8 +397,8 @@ type conversationInfo struct {
 }
 
 // pollUntilDone polls GET /api/conversations/{id} until execution_status
-// reaches a terminal value (finished, error, awaiting_user_input, stopped),
-// or ctx is done.
+// reaches a terminal value (finished, error, waiting_for_confirmation,
+// stuck, deleting), or ctx is done.
 func (r *Runner) pollUntilDone(ctx context.Context, baseURL, convID string) (string, error) {
 	interval := r.PollInterval
 	if interval == 0 {
@@ -379,7 +410,7 @@ func (r *Runner) pollUntilDone(ctx context.Context, baseURL, convID string) (str
 			return "", err
 		}
 		switch info.ExecutionStatus {
-		case statusFinished, statusError, statusAwaitingUserInput, statusStopped:
+		case statusFinished, statusError, statusWaitingForConfirmation, statusStuck, statusDeleting:
 			return info.ExecutionStatus, nil
 		}
 		select {
@@ -390,58 +421,27 @@ func (r *Runner) pollUntilDone(ctx context.Context, baseURL, convID string) (str
 	}
 }
 
-// eventsSearchResponse is the response shape of GET
-// /api/conversations/{id}/events/search.
-type eventsSearchResponse struct {
-	Items []eventEnvelope `json:"items"`
+// agentFinalResponse is the response shape of GET
+// /api/conversations/{id}/agent_final_response — the server's own
+// purpose-built endpoint for "the agent's final response text, extracted
+// from either a FinishAction message or the last agent MessageEvent". Using
+// it instead of hand-parsing the discriminated event union from
+// events/search avoids depending on that union's field names, which don't
+// match ADR-0112's desk-research assumption (the message payload lives
+// under "llm_message", not "message").
+type agentFinalResponse struct {
+	Response string `json:"response"`
 }
 
-// eventEnvelope is one entry of the discriminated union GET
-// .../events/search returns (ActionEvent, MessageEvent, ObservationEvent,
-// ErrorEvent, ...). Only the MessageEvent shape is modelled here since it's
-// the only kind this adapter needs to read from.
-type eventEnvelope struct {
-	Kind    string        `json:"kind"`
-	Message *eventMessage `json:"message,omitempty"`
-}
-
-type eventMessage struct {
-	Role    string        `json:"role"`
-	Content []contentPart `json:"content"`
-}
-
-type contentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-func (m *eventMessage) text() string {
-	if m == nil {
-		return ""
-	}
-	var parts []string
-	for _, c := range m.Content {
-		if c.Text != "" {
-			parts = append(parts, c.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-// lastMessageText returns the text of the last MessageEvent with non-empty
-// content — the agent's final freeform reply, per ADR-0112.
-func (r *Runner) lastMessageText(ctx context.Context, baseURL, convID string) (string, error) {
-	var out eventsSearchResponse
-	if err := r.doJSON(ctx, http.MethodGet, baseURL+"/api/conversations/"+convID+"/events/search", nil, &out); err != nil {
+// finalResponseText returns the agent's final freeform reply, per
+// ADR-0112.
+func (r *Runner) finalResponseText(ctx context.Context, baseURL, convID string) (string, error) {
+	var out agentFinalResponse
+	if err := r.doJSON(ctx, http.MethodGet, baseURL+"/api/conversations/"+convID+"/agent_final_response", nil, &out); err != nil {
 		return "", err
 	}
-	for i := len(out.Items) - 1; i >= 0; i-- {
-		if out.Items[i].Kind != "MessageEvent" {
-			continue
-		}
-		if text := out.Items[i].Message.text(); text != "" {
-			return text, nil
-		}
+	if out.Response == "" {
+		return "", errors.New("agent_final_response returned an empty response")
 	}
-	return "", errors.New("no MessageEvent with text found in conversation events")
+	return out.Response, nil
 }
