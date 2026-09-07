@@ -177,6 +177,17 @@ func (r *Runner) converse(ctx context.Context, baseURL string, req runner.Reques
 		return runner.Response{}, fmt.Errorf("openhands: conversation %s paused waiting_for_confirmation; treated as a runner error, not DecisionAsk (ADR-0112 §3)", convID)
 	}
 
+	// paused and deleting are both terminal-but-unexpected states we have no
+	// way to recover a final response from; surface them as runner errors
+	// the same way, instead of silently falling through to
+	// finalResponseText.
+	if status == statusPaused {
+		return runner.Response{}, fmt.Errorf("openhands: conversation %s paused", convID)
+	}
+	if status == statusDeleting {
+		return runner.Response{}, fmt.Errorf("openhands: conversation %s is deleting", convID)
+	}
+
 	text, err := r.finalResponseText(ctx, baseURL, convID)
 	if err != nil {
 		return runner.Response{}, fmt.Errorf("openhands: fetch final response: %w", err)
@@ -408,7 +419,7 @@ type conversationInfo struct {
 
 // pollUntilDone polls GET /api/conversations/{id} until execution_status
 // reaches a terminal value (finished, error, waiting_for_confirmation,
-// stuck, deleting), or ctx is done.
+// stuck, paused, deleting), or ctx is done.
 func (r *Runner) pollUntilDone(ctx context.Context, baseURL, convID string) (string, error) {
 	interval := r.PollInterval
 	if interval == 0 {
@@ -420,7 +431,7 @@ func (r *Runner) pollUntilDone(ctx context.Context, baseURL, convID string) (str
 			return "", err
 		}
 		switch info.ExecutionStatus {
-		case statusFinished, statusError, statusWaitingForConfirmation, statusStuck, statusDeleting:
+		case statusFinished, statusError, statusWaitingForConfirmation, statusStuck, statusPaused, statusDeleting:
 			return info.ExecutionStatus, nil
 		}
 		select {
