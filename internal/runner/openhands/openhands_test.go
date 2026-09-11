@@ -232,6 +232,30 @@ func TestStartConversation_ToleratesAlreadyRunning409(t *testing.T) {
 	}
 }
 
+// TestStartConversation_UnrelatedConflictPropagates ensures the 409
+// tolerance only matches the "already running" cause, not every 409
+// Conflict — an unrelated conflict (e.g. the conversation is mid-deletion)
+// must still surface as a runner error.
+func TestStartConversation_UnrelatedConflictPropagates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/conversations/conv-1/run", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"detail":"conversation is being deleted"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := testRunner()
+	err := r.startConversation(context.Background(), srv.URL, "conv-1")
+	if err == nil {
+		t.Fatal("expected an error for an unrelated 409 Conflict")
+	}
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusConflict {
+		t.Fatalf("err = %v, want an httpStatusError with StatusCode 409", err)
+	}
+}
+
 // TestStartConversation_OtherHTTPErrorsPropagate ensures the 409 tolerance
 // added above doesn't swallow unrelated failures.
 func TestStartConversation_OtherHTTPErrorsPropagate(t *testing.T) {
