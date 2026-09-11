@@ -425,16 +425,20 @@ func (r *Runner) createConversation(ctx context.Context, baseURL string, req run
 // can already be running the conversation by the time this call lands — for
 // example, create implicitly starts it on some server versions, or a
 // caller retries after a timeout whose original /run actually succeeded —
-// and answers a redundant /run with 409 Conflict. That 409 means the
-// conversation is in the state we wanted (running), not that anything went
-// wrong, so it's tolerated here rather than surfaced as a runner error.
+// and answers a redundant /run with 409 Conflict whose body says the
+// conversation is already running. That specific 409 means the conversation
+// is in the state we wanted (running), not that anything went wrong, so it's
+// tolerated here. A 409 Conflict for any other reason is a real conflict
+// (e.g. the conversation is deleting, or some other state clash) and must
+// still be surfaced as a runner error rather than blanket-swallowed.
 func (r *Runner) startConversation(ctx context.Context, baseURL, convID string) error {
 	err := r.doJSON(ctx, http.MethodPost, baseURL+"/api/conversations/"+convID+"/run", nil, nil)
 	if err == nil {
 		return nil
 	}
 	var statusErr *httpStatusError
-	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict {
+	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict &&
+		strings.Contains(strings.ToLower(statusErr.Body), "already running") {
 		return nil
 	}
 	return err
