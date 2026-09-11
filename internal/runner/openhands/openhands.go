@@ -300,6 +300,20 @@ func (r *Runner) httpClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
+// httpStatusError carries the HTTP status code of a non-2xx Agent Server
+// response so callers can special-case specific codes (e.g. startConversation
+// tolerating 409) without parsing the error string.
+type httpStatusError struct {
+	Method     string
+	URL        string
+	StatusCode int
+	Body       string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s %s: unexpected status %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
+}
+
 // doJSON marshals body (if non-nil) as the request payload, sends it, and
 // unmarshals a 2xx response body into out (if non-nil and non-empty).
 func (r *Runner) doJSON(ctx context.Context, method, url string, body, out any) error {
@@ -328,7 +342,7 @@ func (r *Runner) doJSON(ctx context.Context, method, url string, body, out any) 
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: unexpected status %d: %s", method, url, resp.StatusCode, strings.TrimSpace(string(data)))
+		return &httpStatusError{Method: method, URL: url, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}
 	if out != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {
@@ -407,8 +421,23 @@ func (r *Runner) createConversation(ctx context.Context, baseURL string, req run
 	return out.ID, nil
 }
 
+// startConversation POSTs .../run to kick off execution. The Agent Server
+// can already be running the conversation by the time this call lands — for
+// example, create implicitly starts it on some server versions, or a
+// caller retries after a timeout whose original /run actually succeeded —
+// and answers a redundant /run with 409 Conflict. That 409 means the
+// conversation is in the state we wanted (running), not that anything went
+// wrong, so it's tolerated here rather than surfaced as a runner error.
 func (r *Runner) startConversation(ctx context.Context, baseURL, convID string) error {
-	return r.doJSON(ctx, http.MethodPost, baseURL+"/api/conversations/"+convID+"/run", nil, nil)
+	err := r.doJSON(ctx, http.MethodPost, baseURL+"/api/conversations/"+convID+"/run", nil, nil)
+	if err == nil {
+		return nil
+	}
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict {
+		return nil
+	}
+	return err
 }
 
 // conversationInfo is the response shape of GET /api/conversations/{id}.

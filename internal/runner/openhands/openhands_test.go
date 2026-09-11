@@ -211,6 +211,78 @@ func TestConverse_EmptyFinalResponse(t *testing.T) {
 	}
 }
 
+// TestStartConversation_ToleratesAlreadyRunning409 is a regression test for
+// the create/run race: the Agent Server can answer .../run with 409 Conflict
+// when the conversation is already running (e.g. it auto-started on create,
+// or a retried /run call raced an earlier one that already succeeded). That
+// 409 means the desired state (running) was reached, so it must not be
+// surfaced as a runner error.
+func TestStartConversation_ToleratesAlreadyRunning409(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/conversations/conv-1/run", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"detail":"conversation already running"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := testRunner()
+	if err := r.startConversation(context.Background(), srv.URL, "conv-1"); err != nil {
+		t.Fatalf("startConversation with 409 = %v, want nil", err)
+	}
+}
+
+// TestStartConversation_OtherHTTPErrorsPropagate ensures the 409 tolerance
+// added above doesn't swallow unrelated failures.
+func TestStartConversation_OtherHTTPErrorsPropagate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/conversations/conv-1/run", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("boom"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r := testRunner()
+	err := r.startConversation(context.Background(), srv.URL, "conv-1")
+	if err == nil {
+		t.Fatal("expected an error for a 500 response")
+	}
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("err = %v, want an httpStatusError with StatusCode 500", err)
+	}
+}
+
+// TestConverse_RunRaceReturns409_StillCompletes exercises the race fix at the
+// converse() level: /run answers 409 (as if the conversation had already
+// been started by the time our request landed), yet the conversation still
+// completes normally.
+func TestConverse_RunRaceReturns409_StillCompletes(t *testing.T) {
+	srv, _ := mockAgentServer(t, []string{statusRunning, statusFinished},
+		"All done.\n\n<syntropy-decision>done: fix(x): thing</syntropy-decision>")
+	defer srv.Close()
+
+	mux := http.NewServeMux()
+	mux.Handle("/", srv.Config.Handler)
+	mux.HandleFunc("/api/conversations/conv-1/run", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"detail":"conversation already running"}`))
+	})
+
+	raceSrv := httptest.NewServer(mux)
+	defer raceSrv.Close()
+
+	r := testRunner()
+	resp, err := r.converse(context.Background(), raceSrv.URL, runner.Request{Worktree: "/tmp/w", Goal: "do the thing"})
+	if err != nil {
+		t.Fatalf("converse: %v", err)
+	}
+	if resp.Decision != runner.DecisionDone {
+		t.Errorf("Decision = %v, want Done", resp.Decision)
+	}
+}
+
 func TestConverse_CreateConversationHTTPError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, req *http.Request) {
