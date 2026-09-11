@@ -98,6 +98,15 @@ type Runner struct {
 	// BaseURL, if set, overrides the LLM provider endpoint sent to the
 	// Agent Server as agent.llm.base_url.
 	BaseURL string
+
+	// DefaultModel is the model sent to the Agent Server when a request
+	// does not specify one (runner.Request.Model is empty). Unlike
+	// internal/runner/claude, which leaves an unset model for the Claude
+	// CLI to default on its own, the Agent Server's LLM config has no
+	// runner-independent default — some non-Anthropic endpoints require an
+	// explicit model name on every conversation — so this runner needs its
+	// own fallback.
+	DefaultModel string
 }
 
 // NewRunner constructs a Runner. All arguments are optional.
@@ -402,8 +411,12 @@ type createConversationResponse struct {
 }
 
 func (r *Runner) createConversation(ctx context.Context, baseURL string, req runner.Request, initialMessageText string) (string, error) {
+	model := req.Model
+	if model == "" {
+		model = r.DefaultModel
+	}
 	payload := createConversationRequest{
-		Agent: agentConfig{LLM: llmConfig{Model: req.Model, APIKey: r.APIKey, BaseURL: r.BaseURL}},
+		Agent: agentConfig{LLM: llmConfig{Model: model, APIKey: r.APIKey, BaseURL: r.BaseURL}},
 		Workspace: workspaceConfig{
 			Kind:       "LocalWorkspace",
 			WorkingDir: req.Worktree,

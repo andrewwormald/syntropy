@@ -278,6 +278,49 @@ func TestStartConversation_OtherHTTPErrorsPropagate(t *testing.T) {
 	}
 }
 
+// TestCreateConversation_ModelResolution covers the fallback order for the
+// model sent to the Agent Server: req.Model wins when set, otherwise
+// r.DefaultModel is used, and an empty result (neither set) sends no model
+// at all rather than an empty string.
+func TestCreateConversation_ModelResolution(t *testing.T) {
+	cases := []struct {
+		name         string
+		reqModel     string
+		defaultModel string
+		wantModel    string
+	}{
+		{name: "req model wins", reqModel: "req-model", defaultModel: "default-model", wantModel: "req-model"},
+		{name: "falls back to default", reqModel: "", defaultModel: "default-model", wantModel: "default-model"},
+		{name: "neither set", reqModel: "", defaultModel: "", wantModel: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotModel string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, req *http.Request) {
+				var body createConversationRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode create conversation body: %v", err)
+				}
+				gotModel = body.Agent.LLM.Model
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(createConversationResponse{ID: "conv-1"})
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			r := &Runner{DefaultModel: tc.defaultModel}
+			_, err := r.createConversation(context.Background(), srv.URL, runner.Request{Model: tc.reqModel}, "hello")
+			if err != nil {
+				t.Fatalf("createConversation() error = %v", err)
+			}
+			if gotModel != tc.wantModel {
+				t.Errorf("Agent.LLM.Model = %q, want %q", gotModel, tc.wantModel)
+			}
+		})
+	}
+}
+
 // TestConverse_RunRaceReturns409_StillCompletes exercises the race fix at the
 // converse() level: /run answers 409 (as if the conversation had already
 // been started by the time our request landed), yet the conversation still
