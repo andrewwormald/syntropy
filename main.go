@@ -215,6 +215,7 @@ func cmdDaemon(args []string) error {
 		commitAuthor          = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
 		commitEmail           = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
 		openhandsServerBinary = fs.String("openhands-server-binary", "", "enables the openhands execution runner (ADR-0112) and sets the openhands-agent-server binary it spawns per invocation; planning stays claude-only regardless")
+		openhandsDefaultModel = fs.String("openhands-default-model", "", "model sent to the openhands Agent Server when a request doesn't specify one; no effect unless --openhands-server-binary is also set")
 		stuckThreshold        = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
 		retriggerCooldown     = fs.Duration("reconciler-retrigger-cooldown", reconcilerRetriggerCooldownDefault, "how long a Run is left alone after the reconciler re-triggers it before it can be re-triggered again")
 		retentionPeriod       = fs.Duration("retention-period", retentionPeriodDefault, "how long a terminal (completed/cancelled) Run's records and on-disk run directory are kept before the retention sweep deletes them; 0 disables the sweep (see ADR-0071)")
@@ -264,7 +265,7 @@ func cmdDaemon(args []string) error {
 	if err := rehydrateSecrets(context.Background(), recordStore, secrets, logger); err != nil {
 		logger.Warn("secret rehydration encountered errors; some Runs may have empty registry entries", "err", err)
 	}
-	runners := buildRunners(logger, *openhandsServerBinary)
+	runners := buildRunners(logger, *openhandsServerBinary, *openhandsDefaultModel)
 
 	// Planning is structurally Claude-only (see refactorsweep.plannerRunnerName):
 	// a separate registry keeps discoverSpec from ever resolving an execution
@@ -521,13 +522,18 @@ func isActiveStatus(s refactorsweep.AgentStatus) bool {
 // conditional-credential pattern below (ADR-0112 §4). openhands spawns its
 // own openhands-agent-server subprocess per invocation (no URL to connect
 // to), so the flag value is threaded through as the binary path to spawn.
-func buildRunners(logger *slog.Logger, openhandsServerBinary string) *runner.Registry {
+// openhandsDefaultModel is threaded through to the runner's DefaultModel
+// (used when a request doesn't specify a model); it's a no-op when
+// openhandsServerBinary is empty since no runner is registered.
+func buildRunners(logger *slog.Logger, openhandsServerBinary, openhandsDefaultModel string) *runner.Registry {
 	runners := runner.NewRegistry()
 	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
 
 	if openhandsServerBinary != "" {
-		runners.Register(openhands.NewRunner(openhandsServerBinary))
-		logger.Info("runner registered", "name", "openhands", "binary", openhandsServerBinary)
+		r := openhands.NewRunner(openhandsServerBinary)
+		r.DefaultModel = openhandsDefaultModel
+		runners.Register(r)
+		logger.Info("runner registered", "name", "openhands", "binary", openhandsServerBinary, "default_model", openhandsDefaultModel)
 	}
 	return runners
 }
@@ -2123,11 +2129,18 @@ func cmdPhrases(args []string) error {
 //
 // It also prints the execution runners this binary has registered
 // (runners.Names()), so an agent can tell whether openhands is available
-// alongside claude without reading daemon flags or source.
+// alongside claude without reading daemon flags or source, plus the
+// openhands runner's DefaultModel (when set) since that's otherwise only
+// visible via the daemon's --openhands-default-model flag.
 func checkRepoConfig(repoDir string, w io.Writer, runners *runner.Registry) ([]string, error) {
 	names := runners.Names()
 	sort.Strings(names)
 	fmt.Fprintf(w, "Runners: %s\n", strings.Join(names, ", "))
+	if oh, err := runners.Get("openhands"); err == nil {
+		if r, ok := oh.(*openhands.Runner); ok && r.DefaultModel != "" {
+			fmt.Fprintf(w, "Openhands default model: %s\n", r.DefaultModel)
+		}
+	}
 
 	cfg, err := setup.ReadRepoConfig(repoDir)
 	if err != nil {
@@ -2187,6 +2200,7 @@ func cmdConfig(args []string) error {
 		fs := flag.NewFlagSet("config check", flag.ExitOnError)
 		repoFlag := fs.String("repo", "", "repo root to check (default: current directory)")
 		openhandsServerBinary := fs.String("openhands-server-binary", "", "report the openhands runner as registered — must match the running daemon's own --openhands-server-binary flag")
+		openhandsDefaultModel := fs.String("openhands-default-model", "", "report the openhands runner's default model — must match the running daemon's own --openhands-default-model flag")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -2198,7 +2212,7 @@ func cmdConfig(args []string) error {
 				return fmt.Errorf("cwd: %w", err)
 			}
 		}
-		runners := buildRunners(slog.New(slog.NewTextHandler(io.Discard, nil)), *openhandsServerBinary)
+		runners := buildRunners(slog.New(slog.NewTextHandler(io.Discard, nil)), *openhandsServerBinary, *openhandsDefaultModel)
 		missing, err := checkRepoConfig(repoDir, os.Stdout, runners)
 		if err != nil {
 			return err

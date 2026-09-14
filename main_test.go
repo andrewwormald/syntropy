@@ -436,7 +436,7 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 	logger := discardLogger()
 
-	runners := buildRunners(logger, "")
+	runners := buildRunners(logger, "", "")
 	if _, err := runners.Get("claude"); err != nil {
 		t.Errorf("claude should always be registered: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 		t.Errorf("openhands should not be registered when --openhands-server-binary is unset")
 	}
 
-	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server")
+	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server", "")
 	if _, err := runners.Get("claude"); err != nil {
 		t.Errorf("claude should still be registered: %v", err)
 	}
@@ -452,6 +452,37 @@ func TestBuildRunners_OpenHandsOptIn(t *testing.T) {
 		t.Errorf("openhands should be registered when --openhands-server-binary is set: %v", err)
 	} else if rn.Name() != "openhands" {
 		t.Errorf("Name() = %q, want %q", rn.Name(), "openhands")
+	}
+}
+
+// TestBuildRunners_OpenHandsDefaultModel asserts the openhands runner's
+// DefaultModel is set from the openhandsDefaultModel argument, and that an
+// empty value leaves it unset (the Agent Server relies on req.Model instead
+// — see openhands.Runner.DefaultModel's doc comment).
+func TestBuildRunners_OpenHandsDefaultModel(t *testing.T) {
+	logger := discardLogger()
+
+	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server", "claude-sonnet-5")
+	rn, err := runners.Get("openhands")
+	if err != nil {
+		t.Fatalf("Get(openhands): %v", err)
+	}
+	oh, ok := rn.(*openhands.Runner)
+	if !ok {
+		t.Fatalf("openhands runner is %T, want *openhands.Runner", rn)
+	}
+	if oh.DefaultModel != "claude-sonnet-5" {
+		t.Errorf("DefaultModel = %q, want %q", oh.DefaultModel, "claude-sonnet-5")
+	}
+
+	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server", "")
+	rn, err = runners.Get("openhands")
+	if err != nil {
+		t.Fatalf("Get(openhands): %v", err)
+	}
+	oh = rn.(*openhands.Runner)
+	if oh.DefaultModel != "" {
+		t.Errorf("DefaultModel = %q, want empty", oh.DefaultModel)
 	}
 }
 
@@ -469,7 +500,7 @@ func TestBuildRunners_SpecOmittingRunnerStillResolvesToClaude(t *testing.T) {
 	logger := discardLogger()
 
 	// Both runners registered, as if --openhands-server-binary was set.
-	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server")
+	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server", "")
 	if len(runners.Names()) != 2 {
 		t.Fatalf("want both claude and openhands registered; got %v", runners.Names())
 	}
@@ -940,6 +971,41 @@ func TestCmdConfig_RunnersReflectOpenhandsServerBinaryFlag(t *testing.T) {
 		out := flush()
 		if !strings.Contains(out, "Runners: claude, openhands") {
 			t.Errorf("got %q, want openhands registered when --openhands-server-binary is set", out)
+		}
+	})
+}
+
+// TestCmdConfig_ReportsOpenhandsDefaultModel asserts cmdConfig surfaces the
+// openhands runner's default model when --openhands-default-model is set
+// alongside --openhands-server-binary, and omits the line entirely when
+// unset — mirroring the daemon's own --openhands-default-model flag so an
+// agent can confirm the two are in sync without reading daemon flags.
+func TestCmdConfig_ReportsOpenhandsDefaultModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if strings.Contains(out, "Openhands default model:") {
+			t.Errorf("got %q, want no default-model line when --openhands-default-model is unset", out)
+		}
+	})
+
+	t.Run("set", func(t *testing.T) {
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server", "--openhands-default-model", "claude-sonnet-5"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Openhands default model: claude-sonnet-5\n") {
+			t.Errorf("got %q, want it to report the openhands default model", out)
 		}
 	})
 }
