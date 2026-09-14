@@ -154,7 +154,14 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 
 `claude` is the default execution runner and needs no extra setup. OpenHands is a second, opt-in execution runner ([ADR-0112](decisions/0112-openhands-agent-server-runner-design.md), corrected by [ADR-0113](decisions/0113-openhands-agent-server-schema-corrections.md) after a local spike) — planning (`discoverSpec`) always stays on Claude regardless of this setting.
 
-1. **Install the OS dependency.** `agent-server` (the console script `openhands-agent-server` ships as part of `OpenHands/software-agent-sdk` — ADR-0113 corrected the binary name from ADR-0112's original assumption) is a Python package; it needs a Python/`uv` runtime on whichever host runs `syntropy daemon`. Install it and confirm `agent-server` is on `$PATH` or note its absolute path.
+1. **Install `agent-server` and its runtime dependencies.** The PyPI package is `openhands-agent-server` (part of `OpenHands/software-agent-sdk`), but the console script it installs is named `agent-server`, not `openhands-agent-server` — ADR-0113 corrected this naming mistake from ADR-0112's original assumption. A plain install is not enough: `agent-server` also needs the `libtmux` and `openhands-tools` Python packages, plus the system `tmux` binary, none of which a plain install pulls in. On whichever host runs `syntropy daemon`:
+
+   ```bash
+   brew install tmux   # or your OS's package manager — a separate, non-Python dependency
+   uv tool install openhands-agent-server --with libtmux --with openhands-tools
+   ```
+
+   Confirm `agent-server` is on `$PATH` or note its absolute path.
 2. **Start the daemon with the opt-in flags:**
 
    ```bash
