@@ -179,7 +179,7 @@ The first MR appears on the target repo within a minute or two. Review it, merge
    export OPENHANDS_LLM_API_KEY=sk-...
    export OPENHANDS_LLM_BASE_URL=https://your-litellm-proxy.example.com   # optional; only if not calling the provider directly
    ```
-4. **Select it in a spec.** Once registered, set `runner: openhands` in a spec's frontmatter. `syntropy config check` reports which runners are registered (`Runners: claude, openhands`) and whether credentials are configured — never the key/URL values themselves.
+4. **Select it in a spec.** Once registered, set `runner: openhands` in a spec's frontmatter. `syntropy config check` reports which runners are registered (`Runners: claude, openhands`), whether credentials are configured (never the key/URL values themselves), and whether `tmux`/`libtmux`/`openhands-tools` from step 1 are actually installed ([ADR-0114](decisions/0114-openhands-dependency-preflight.md)) — so a missing dependency shows up here instead of as a cryptic subprocess failure during a real Run.
 
 Before relying on this in production: per ADR-0112's Consequences, no tagged release should ship an OpenHands run until it's been exercised against a real `agent-server` locally, not just unit-tested against mocks — the same local-test gate this repo applies to other higher-risk changes.
 

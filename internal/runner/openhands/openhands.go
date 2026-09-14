@@ -107,6 +107,15 @@ type Runner struct {
 	// explicit model name on every conversation — so this runner needs its
 	// own fallback.
 	DefaultModel string
+
+	// lookPath and checkPythonImport back MissingDependencies' two exec.*
+	// calls (finding tmux/agent-server on PATH, and shelling out to python
+	// to test an import). Both are nil in normal use, which falls back to
+	// exec.LookPath / actually invoking python; tests override them to
+	// exercise MissingDependencies' logic without depending on the host
+	// actually having (or lacking) these dependencies installed.
+	lookPath          func(file string) (string, error)
+	checkPythonImport func(python, module string) error
 }
 
 // NewRunner constructs a Runner. All arguments are optional.

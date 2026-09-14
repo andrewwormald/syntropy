@@ -1093,6 +1093,30 @@ func TestCmdConfig_ReportsOpenhandsCredentials(t *testing.T) {
 	})
 }
 
+// TestCmdConfig_ReportsOpenhandsMissingDependencies asserts cmdConfig's
+// "config check" surfaces agent-server's undeclared runtime dependencies
+// (tmux, libtmux, openhands-tools — README's "Enabling OpenHands" §1)
+// instead of silently letting a real Run hit a cryptic subprocess failure.
+// Runs against a bogus --openhands-server-binary path, which is guaranteed
+// not to exist (and so not resolvable on PATH) on any host this test runs
+// on, deterministically exercising the "could not check" branch.
+func TestCmdConfig_ReportsOpenhandsMissingDependencies(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+
+	flush := captureStdout(t)
+	if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/definitely/not/a/real/agent-server-binary"}); err != nil {
+		t.Fatalf("cmdConfig: %v", err)
+	}
+	out := flush()
+	if !strings.Contains(out, "Openhands dependencies: could not check") {
+		t.Errorf("got %q, want it to report it could not check dependencies for a nonexistent binary", out)
+	}
+}
+
 // --- config check: effective spec tool (ADR-0099's deferred consumption) ---
 
 func TestCheckRepoConfig_SpecTool_NeitherSet_ReportsSyntropyDefault(t *testing.T) {

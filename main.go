@@ -2146,6 +2146,11 @@ func cmdPhrases(args []string) error {
 // LLM credentials (APIKey/BaseURL, from OPENHANDS_LLM_API_KEY/
 // OPENHANDS_LLM_BASE_URL) are configured — never the values themselves,
 // since this only answers "is something configured," not "what is it."
+//
+// It also runs the openhands runner's MissingDependencies preflight — tmux,
+// libtmux, openhands-tools (README's "Enabling OpenHands" §1) — so a repo
+// opting into openhands finds out about a missing dependency here, not from
+// a cryptic subprocess failure partway through a real Run.
 func checkRepoConfig(repoDir string, w io.Writer, runners *runner.Registry) ([]string, error) {
 	names := runners.Names()
 	sort.Strings(names)
@@ -2157,6 +2162,17 @@ func checkRepoConfig(repoDir string, w io.Writer, runners *runner.Registry) ([]s
 			}
 			if r.APIKey != "" || r.BaseURL != "" {
 				fmt.Fprintln(w, "Openhands credentials: configured")
+			}
+			switch missingDeps, err := r.MissingDependencies(); {
+			case err != nil:
+				fmt.Fprintf(w, "Openhands dependencies: could not check (%v)\n", err)
+			case len(missingDeps) > 0:
+				fmt.Fprintf(w, "Openhands dependencies MISSING (%d):\n", len(missingDeps))
+				for _, dep := range missingDeps {
+					fmt.Fprintf(w, "  - %s\n", dep)
+				}
+			default:
+				fmt.Fprintln(w, "Openhands dependencies: OK (tmux, libtmux, openhands-tools all found)")
 			}
 		}
 	}
