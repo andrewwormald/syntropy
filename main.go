@@ -525,6 +525,11 @@ func isActiveStatus(s refactorsweep.AgentStatus) bool {
 // openhandsDefaultModel is threaded through to the runner's DefaultModel
 // (used when a request doesn't specify a model); it's a no-op when
 // openhandsServerBinary is empty since no runner is registered.
+//
+// The openhands LLM credentials (APIKey/BaseURL) are read directly from
+// OPENHANDS_LLM_API_KEY/OPENHANDS_LLM_BASE_URL, mirroring buildProviders'
+// GITLAB_TOKEN/GITHUB_TOKEN convention — env vars, not flags, since a flag
+// value is visible in `ps aux` and shell history.
 func buildRunners(logger *slog.Logger, openhandsServerBinary, openhandsDefaultModel string) *runner.Registry {
 	runners := runner.NewRegistry()
 	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
@@ -532,8 +537,14 @@ func buildRunners(logger *slog.Logger, openhandsServerBinary, openhandsDefaultMo
 	if openhandsServerBinary != "" {
 		r := openhands.NewRunner(openhandsServerBinary)
 		r.DefaultModel = openhandsDefaultModel
+		r.APIKey = os.Getenv("OPENHANDS_LLM_API_KEY")
+		r.BaseURL = os.Getenv("OPENHANDS_LLM_BASE_URL")
 		runners.Register(r)
-		logger.Info("runner registered", "name", "openhands", "binary", openhandsServerBinary, "default_model", openhandsDefaultModel)
+		credentials := "not set"
+		if r.APIKey != "" || r.BaseURL != "" {
+			credentials = "configured"
+		}
+		logger.Info("runner registered", "name", "openhands", "binary", openhandsServerBinary, "default_model", openhandsDefaultModel, "credentials", credentials)
 	}
 	return runners
 }
@@ -2131,14 +2142,22 @@ func cmdPhrases(args []string) error {
 // (runners.Names()), so an agent can tell whether openhands is available
 // alongside claude without reading daemon flags or source, plus the
 // openhands runner's DefaultModel (when set) since that's otherwise only
-// visible via the daemon's --openhands-default-model flag.
+// visible via the daemon's --openhands-default-model flag, and whether its
+// LLM credentials (APIKey/BaseURL, from OPENHANDS_LLM_API_KEY/
+// OPENHANDS_LLM_BASE_URL) are configured — never the values themselves,
+// since this only answers "is something configured," not "what is it."
 func checkRepoConfig(repoDir string, w io.Writer, runners *runner.Registry) ([]string, error) {
 	names := runners.Names()
 	sort.Strings(names)
 	fmt.Fprintf(w, "Runners: %s\n", strings.Join(names, ", "))
 	if oh, err := runners.Get("openhands"); err == nil {
-		if r, ok := oh.(*openhands.Runner); ok && r.DefaultModel != "" {
-			fmt.Fprintf(w, "Openhands default model: %s\n", r.DefaultModel)
+		if r, ok := oh.(*openhands.Runner); ok {
+			if r.DefaultModel != "" {
+				fmt.Fprintf(w, "Openhands default model: %s\n", r.DefaultModel)
+			}
+			if r.APIKey != "" || r.BaseURL != "" {
+				fmt.Fprintln(w, "Openhands credentials: configured")
+			}
 		}
 	}
 

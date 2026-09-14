@@ -486,6 +486,47 @@ func TestBuildRunners_OpenHandsDefaultModel(t *testing.T) {
 	}
 }
 
+// TestBuildRunners_OpenHandsCredentials asserts the openhands runner's
+// APIKey/BaseURL are set from OPENHANDS_LLM_API_KEY/OPENHANDS_LLM_BASE_URL,
+// mirroring buildProviders' GITLAB_TOKEN/GITHUB_TOKEN convention, and that
+// both are left unset when the env vars are absent.
+func TestBuildRunners_OpenHandsCredentials(t *testing.T) {
+	logger := discardLogger()
+
+	t.Setenv("OPENHANDS_LLM_API_KEY", "sk-fake-test-key")
+	t.Setenv("OPENHANDS_LLM_BASE_URL", "https://llm.example.com")
+	runners := buildRunners(logger, "/usr/local/bin/openhands-agent-server", "")
+	rn, err := runners.Get("openhands")
+	if err != nil {
+		t.Fatalf("Get(openhands): %v", err)
+	}
+	oh, ok := rn.(*openhands.Runner)
+	if !ok {
+		t.Fatalf("openhands runner is %T, want *openhands.Runner", rn)
+	}
+	if oh.APIKey != "sk-fake-test-key" {
+		t.Errorf("APIKey = %q, want %q", oh.APIKey, "sk-fake-test-key")
+	}
+	if oh.BaseURL != "https://llm.example.com" {
+		t.Errorf("BaseURL = %q, want %q", oh.BaseURL, "https://llm.example.com")
+	}
+
+	t.Setenv("OPENHANDS_LLM_API_KEY", "")
+	t.Setenv("OPENHANDS_LLM_BASE_URL", "")
+	runners = buildRunners(logger, "/usr/local/bin/openhands-agent-server", "")
+	rn, err = runners.Get("openhands")
+	if err != nil {
+		t.Fatalf("Get(openhands): %v", err)
+	}
+	oh = rn.(*openhands.Runner)
+	if oh.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty", oh.APIKey)
+	}
+	if oh.BaseURL != "" {
+		t.Errorf("BaseURL = %q, want empty", oh.BaseURL)
+	}
+}
+
 // TestBuildRunners_SpecOmittingRunnerStillResolvesToClaude proves that
 // registering openhands alongside claude doesn't change what a spec that
 // omits `runner:` resolves to. cmdStart's --runner flag defaults to
@@ -1006,6 +1047,48 @@ func TestCmdConfig_ReportsOpenhandsDefaultModel(t *testing.T) {
 		out := flush()
 		if !strings.Contains(out, "Openhands default model: claude-sonnet-5\n") {
 			t.Errorf("got %q, want it to report the openhands default model", out)
+		}
+	})
+}
+
+// TestCmdConfig_ReportsOpenhandsCredentials asserts cmdConfig's "config
+// check" reports "Openhands credentials: configured" when either
+// OPENHANDS_LLM_API_KEY or OPENHANDS_LLM_BASE_URL is set, omits the line
+// entirely otherwise, and never prints the actual credential value —
+// config check reads the env vars directly (no CLI flag) so it reflects
+// the real daemon's configuration rather than a value passed twice.
+func TestCmdConfig_ReportsOpenhandsCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".syntropy.yml"), []byte("title_convention: blank\n"), 0o644); err != nil {
+		t.Fatalf("seed .syntropy.yml: %v", err)
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("OPENHANDS_LLM_API_KEY", "")
+		t.Setenv("OPENHANDS_LLM_BASE_URL", "")
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if strings.Contains(out, "Openhands credentials:") {
+			t.Errorf("got %q, want no credentials line when neither env var is set", out)
+		}
+	})
+
+	t.Run("set", func(t *testing.T) {
+		t.Setenv("OPENHANDS_LLM_API_KEY", "sk-fake-test-key")
+		flush := captureStdout(t)
+		if err := cmdConfig([]string{"check", "--repo", dir, "--openhands-server-binary", "/usr/local/bin/openhands-agent-server"}); err != nil {
+			t.Fatalf("cmdConfig: %v", err)
+		}
+		out := flush()
+		if !strings.Contains(out, "Openhands credentials: configured\n") {
+			t.Errorf("got %q, want it to report openhands credentials as configured", out)
+		}
+		if strings.Contains(out, "sk-fake-test-key") {
+			t.Errorf("got %q, want the actual credential value to never appear in output", out)
 		}
 	})
 }
