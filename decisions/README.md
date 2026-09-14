@@ -160,3 +160,5 @@ forces or unlocks.
 | 0111 | Repeated-pause escalation stops re-invoking the runner                  | Accepted | 2026-08-14 |
 | 0112 | OpenHands runner: per-Run Agent Server subprocess, reused decision-marker protocol, planning stays Claude-only | Accepted | 2026-09-03 |
 | 0113 | OpenHands Agent Server — five schema corrections from a local spike (amends ADR-0112) | Accepted | 2026-09-07 |
+
+For the operator how-to that puts ADR-0112/ADR-0113 into practice — the opt-in flag, OS runtime dependencies, daemon flags/env vars, and the LiteLLM model-prefix requirement — see [README.md § Enabling OpenHands (opt-in)](../README.md#enabling-openhands-opt-in).
