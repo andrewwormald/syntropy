@@ -150,6 +150,39 @@ syntropy start --spec ~/syntropy-specs/migrate.spec.md
 
 The first MR appears on the target repo within a minute or two. Review it, merge it, and the next opens automatically.
 
+## Enabling OpenHands (opt-in)
+
+`claude` is the default execution runner and needs no extra setup. OpenHands is a second, opt-in execution runner ([ADR-0112](decisions/0112-openhands-agent-server-runner-design.md), corrected by [ADR-0113](decisions/0113-openhands-agent-server-schema-corrections.md) after a local spike) — planning (`discoverSpec`) always stays on Claude regardless of this setting.
+
+1. **Install `agent-server` and its runtime dependencies.** The PyPI package is `openhands-agent-server` (part of `OpenHands/software-agent-sdk`), but the console script it installs is named `agent-server`, not `openhands-agent-server` — ADR-0113 corrected this naming mistake from ADR-0112's original assumption. A plain install is not enough: `agent-server` also needs the `libtmux` and `openhands-tools` Python packages, plus the system `tmux` binary, none of which a plain install pulls in. On whichever host runs `syntropy daemon`:
+
+   ```bash
+   brew install tmux   # or your OS's package manager — a separate, non-Python dependency
+   uv tool install openhands-agent-server --with libtmux --with openhands-tools
+   ```
+
+   Confirm `agent-server` is on `$PATH` or note its absolute path.
+2. **Start the daemon with the opt-in flags:**
+
+   ```bash
+   syntropy daemon \
+     --openhands-server-binary agent-server \
+     --openhands-default-model anthropic/claude-sonnet-5 \
+     --commit-author "Your Name" --commit-email "you@example.com" &
+   ```
+
+   - `--openhands-server-binary` is what actually enables the runner — left empty (the default), openhands is never registered and `claude` stays the only execution runner. The daemon spawns one `agent-server` subprocess per invocation and tears it down when the invocation ends (ADR-0112 §1).
+   - `--openhands-default-model` is sent to the Agent Server when a request doesn't specify a model — unlike the `claude` CLI, the Agent Server's LLM config has no runner-independent default. The Agent Server routes LLM calls through LiteLLM, so this needs LiteLLM's provider-prefixed model naming (e.g. `anthropic/claude-sonnet-5`, `openai/gpt-4o`), not a bare model name.
+3. **Set LLM credentials via env vars, not flags** — a flag value is visible in `ps aux` and shell history:
+
+   ```bash
+   export OPENHANDS_LLM_API_KEY=sk-...
+   export OPENHANDS_LLM_BASE_URL=https://your-litellm-proxy.example.com   # optional; only if not calling the provider directly
+   ```
+4. **Select it in a spec.** Once registered, set `runner: openhands` in a spec's frontmatter. `syntropy config check` reports which runners are registered (`Runners: claude, openhands`) and whether credentials are configured — never the key/URL values themselves.
+
+Before relying on this in production: per ADR-0112's Consequences, no tagged release should ship an OpenHands run until it's been exercised against a real `agent-server` locally, not just unit-tested against mocks — the same local-test gate this repo applies to other higher-risk changes.
+
 ## Features
 
 - **One MR/PR at a time.** Small, reviewable, Draft by default; concurrency is configurable but defaults to one in flight.
