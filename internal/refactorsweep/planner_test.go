@@ -369,6 +369,195 @@ func TestDiscoverSpec_NoPlannerRunners(t *testing.T) {
 	}
 }
 
+// --- Planning-turn-wrote-real-work landing ---
+//
+// discoverSpec's planning worktree is refreshed with HardReset before every
+// planning call, on the assumption planning is read-only. If a planner
+// leaves real, uncommitted-or-committed-but-unpushed work in that worktree
+// before returning its Decision, that work must be landed as its own
+// increment before HardReset can wipe it out on the next call — not
+// silently discarded while discoverSpec acts on Done/NoChange/Ask/Continue.
+
+func TestDiscoverSpec_LandsWorkBeforeDone(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{hasWork: boolPtr(true)})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Spec is fully implemented.",
+	}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusCompleted {
+		t.Errorf("want StatusCompleted after landing + Done, got %v", next)
+	}
+	if len(g.pushes) != 1 || len(fp.createMRCalls) != 1 {
+		t.Fatalf("want one landed MR; pushes=%d createMRCalls=%d", len(g.pushes), len(fp.createMRCalls))
+	}
+	if len(r.Object.Plan) != 1 || r.Object.Plan[0].UnitID != "increment-1" {
+		t.Fatalf("Plan: want one landed increment-1 entry; got %+v", r.Object.Plan)
+	}
+	if r.Object.Plan[0].Outcome != "in_flight" {
+		t.Errorf("landed unit Outcome: want in_flight, got %q", r.Object.Plan[0].Outcome)
+	}
+	if len(r.Object.InFlight) != 1 {
+		t.Errorf("landed unit should be recorded in InFlight; got %+v", r.Object.InFlight)
+	}
+	desc := fp.createMRCalls[0].Description
+	if !strings.Contains(desc, "Planning-turn-implemented work") {
+		t.Errorf("MR description should carry a provenance note; got %q", desc)
+	}
+}
+
+func TestDiscoverSpec_LandsWorkBeforeNoChange(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{hasWork: boolPtr(true)})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionNoChange,
+		Summary:  "Nothing further to plan right now.",
+	}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusCompleted {
+		t.Errorf("want StatusCompleted after landing + NoChange, got %v", next)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("want the planning-turn work pushed; got %d pushes", len(g.pushes))
+	}
+	if len(r.Object.Plan) != 1 {
+		t.Errorf("Plan: want one landed entry; got %+v", r.Object.Plan)
+	}
+}
+
+func TestDiscoverSpec_LandsWorkBeforeAsk(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{hasWork: boolPtr(true)})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionAsk,
+		Question: "Should I also refactor the deprecated middleware?",
+	}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want StatusPaused after landing + Ask, got %v", next)
+	}
+	if !strings.HasPrefix(r.Object.PauseReason, askPausePrefix) {
+		t.Errorf("PauseReason should still carry the Ask question; got %q", r.Object.PauseReason)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("want the planning-turn work pushed even though the Run pauses; got %d pushes", len(g.pushes))
+	}
+	if len(r.Object.Plan) != 1 {
+		t.Errorf("Plan: want one landed entry; got %+v", r.Object.Plan)
+	}
+}
+
+func TestDiscoverSpec_CleanPlanningWorktree_NoLanding(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{hasWork: boolPtr(false)})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Migrate services/payments to slog",
+	}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusWorking {
+		t.Errorf("want StatusWorking, got %v", next)
+	}
+	if len(g.commits) != 0 || len(g.pushes) != 0 || len(fp.createMRCalls) != 0 {
+		t.Errorf("clean planning worktree should not land anything; commits=%d pushes=%d createMRCalls=%d",
+			len(g.commits), len(g.pushes), len(fp.createMRCalls))
+	}
+	// Only the normal DecisionContinue increment should be in the Plan.
+	if len(r.Object.Plan) != 1 || r.Object.Plan[0].UnitID != "increment-1" {
+		t.Fatalf("Plan: want just the DecisionContinue increment-1; got %+v", r.Object.Plan)
+	}
+	if r.Object.CurrentUnit != "increment-1" {
+		t.Errorf("CurrentUnit: want increment-1, got %q", r.Object.CurrentUnit)
+	}
+}
+
+func TestDiscoverSpec_LandedUnitAndDecisionContinue_SequentialUnitIDs(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	g := d.withGit(&fakeGit{hasWork: boolPtr(true)})
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Migrate services/payments to slog",
+	}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	next, err := d.discover(t.Context(), r)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if next != StatusWorking {
+		t.Errorf("want StatusWorking, got %v", next)
+	}
+	if len(g.pushes) != 1 || len(fp.createMRCalls) != 1 {
+		t.Fatalf("want the landed unit's MR pushed once; pushes=%d createMRCalls=%d", len(g.pushes), len(fp.createMRCalls))
+	}
+	if len(r.Object.Plan) != 2 {
+		t.Fatalf("Plan: want landed increment + DecisionContinue increment; got %+v", r.Object.Plan)
+	}
+	if r.Object.Plan[0].UnitID != "increment-1" {
+		t.Errorf("landed unit should be increment-1; got %q", r.Object.Plan[0].UnitID)
+	}
+	if r.Object.Plan[1].UnitID != "increment-2" {
+		t.Errorf("DecisionContinue unit should be increment-2; got %q", r.Object.Plan[1].UnitID)
+	}
+	if r.Object.CurrentUnit != "increment-2" {
+		t.Errorf("CurrentUnit should be the DecisionContinue unit increment-2, not the landed one; got %q", r.Object.CurrentUnit)
+	}
+
+	// A subsequent planning turn (e.g. after increment-2 merges) must keep
+	// numbering sequential off the full Plan, not restart or collide with
+	// the landed unit.
+	d.withPlannerRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Migrate services/kyc to slog",
+	}})
+	updatePlanOutcome(r.Object, "increment-1", "completed")
+	updatePlanOutcome(r.Object, "increment-2", "completed")
+	r.Object.CurrentUnit = ""
+
+	if _, err := d.discover(t.Context(), r); err != nil {
+		t.Fatalf("discover (second call): %v", err)
+	}
+	if r.Object.CurrentUnit != "increment-4" {
+		t.Errorf("next unit should be increment-4 (accounting for the landed increment-3); got %q", r.Object.CurrentUnit)
+	}
+}
+
 func TestMarkUnitBlacklisted_UpdatesPlanOutcome(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	d.withRunner(t, &fakeRunner{})

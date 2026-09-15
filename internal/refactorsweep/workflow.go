@@ -553,6 +553,47 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 		return StatusFailed, fmt.Errorf("discover: planner: %w", runErr)
 	}
 
+	// The planning turn is supposed to be read-only (HardReset wipes
+	// planningDir before every call), but a planner that writes real changes
+	// to planningDir before returning its Decision would otherwise have that
+	// work silently discarded on the next HardReset. Land it as its own
+	// increment before acting on resp.Decision at all.
+	if d.Git != nil && r.Object.BaseRepo != "" {
+		hasWork, hwErr := d.Git.HasWorkBeyondBase(ctx, planningDir, baseBranch)
+		if hwErr != nil {
+			return StatusFailed, fmt.Errorf("discover: HasWorkBeyondBase: %w", hwErr)
+		}
+		if hasWork {
+			p, ok := d.Providers[r.Object.ProviderName]
+			if !ok {
+				return StatusFailed, fmt.Errorf("discover: unknown provider %q", r.Object.ProviderName)
+			}
+
+			unitID := fmt.Sprintf("increment-%d", len(r.Object.Plan)+1)
+			r.Object.Plan = append(r.Object.Plan, PlannedIncrement{
+				UnitID:    unitID,
+				Rationale: "work the planning turn left in the planning worktree, landed before its decision was acted on",
+				PlannedAt: time.Now(),
+				Outcome:   "in_flight",
+			})
+
+			landResp := resp
+			landResp.Summary = fmt.Sprintf(
+				"Planning-turn-implemented work — landed by discoverSpec before acting on its Decision (%s), not a normal execution turn.\n\n%s",
+				resp.Decision, resp.Summary)
+
+			// hookRetries starts exhausted: a hook rejection here can't be
+			// fixed by re-running the planner (its turn already finished and
+			// planningDir is about to be reset), so land it once and pause on
+			// rejection rather than looping.
+			hookRetries := maxHookRetries
+			status, err, _ := d.landUnit(ctx, r, unitID, planningDir, planBranch, baseBranch, p, landResp, &req, &hookRetries)
+			if status == StatusPaused || status == StatusFailed {
+				return status, err
+			}
+		}
+	}
+
 	switch resp.Decision {
 	case DecisionDone, DecisionNoChange:
 		// Planner says we're done (Done) or there's nothing actionable
