@@ -1,6 +1,6 @@
 # ADR-0066: `invokeForEvent`'s DecisionContinue commits and pushes, like Done
 
-**Status**: Accepted
+**Status**: Accepted (its Done-only discussion resolution is superseded by [ADR-0115](0115-resolve-thread-on-continue-and-surface-resolve-failures.md) — Continue now resolves the thread too; the commit/push decision and the reply wording split still stand)
 **Date**: 2026-07-21
 
 ## Context
@@ -44,6 +44,10 @@ two decisions should still differ:
   discussion thread. `Continue` means the reviewer's feedback isn't fully
   addressed yet, so the thread stays open for whatever event continues it
   — resolving it would misrepresent an unfinished conversation as settled.
+  *(Superseded by [ADR-0115](0115-resolve-thread-on-continue-and-surface-resolve-failures.md):
+  since there is no automatic re-invocation, the open thread bought no
+  follow-up and only blocked auto-merge, so `Continue` now resolves too
+  and relies on the reply wording below to show work remains.)*
 - **Reply wording**: `Done` posts `✓ Addressed (...)`; `Continue` posts
   `🔄 Partial progress (...)` plus a pointer that commenting again (or
   `/syntropy prompt <text>`) continues the work — `invokeForEvent` has no

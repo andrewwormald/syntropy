@@ -56,6 +56,11 @@ type fakeProvider struct {
 	resolveErr error
 	resolves   []resolvedDiscussion
 
+	// callOrder records "reply"/"resolve" in the order they happened, so a
+	// test can assert the summary reply lands in the thread before the
+	// thread is resolved (and collapsed) — see ADR-0115.
+	callOrder []string
+
 	reactErr   error
 	reactions  []reactToNoteCall
 
@@ -205,12 +210,14 @@ func (f *fakeProvider) ResolveDiscussion(_ context.Context, projectID string, mr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolves = append(f.resolves, resolvedDiscussion{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID})
+	f.callOrder = append(f.callOrder, "resolve")
 	return f.resolveErr
 }
 func (f *fakeProvider) ReplyToDiscussion(_ context.Context, projectID string, mrIID int, discussionID string, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.replies = append(f.replies, repliedComment{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID, Body: body})
+	f.callOrder = append(f.callOrder, "reply")
 	return f.replyErr
 }
 func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
@@ -2233,6 +2240,99 @@ func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
 	}
 }
 
+// ADR-0115: a resolve that fails on the no-code-change path used to be
+// dropped on the floor (`_ = p.ResolveDiscussion(...)`), leaving the
+// thread open with nothing anywhere to say why — and an open thread is
+// what blocks auto-merge. The failure must now be surfaced in the thread.
+func TestResume_NoteAdded_NoCodeChange_ResolveFails_SurfacesFailure(t *testing.T) {
+	fp := &fakeProvider{resolveErr: errors.New("403 forbidden")}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Already correct"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(false)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "are you sure about Foo?", DiscussionID: "disc-abc"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: want nil err even when resolve fails, got %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("a failed resolve must not change the status; got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("a failed resolve must not pause the Run; PauseReason=%q", r.Object.PauseReason)
+	}
+	var surfaced bool
+	for _, c := range fp.replies {
+		if strings.Contains(c.Body, "couldn't resolve") && strings.Contains(c.Body, "403 forbidden") && c.DiscussionID == "disc-abc" {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Errorf("expected the resolve failure surfaced in the originating thread; got %+v", fp.replies)
+	}
+}
+
+// A comment with no resolvable thread (GitHub issue_comment or review
+// body, GitLab non-diff discussion — all arrive with DiscussionID="")
+// must not reach ResolveDiscussion at all, and must not produce a
+// "couldn't resolve" note about a thread that never existed.
+func TestResume_NoteAdded_NoDiscussionID_SkipsResolveSilently(t *testing.T) {
+	fp := &fakeProvider{resolveErr: errors.New("should not be called")}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Fixed it"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo"},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(fp.resolves) != 0 {
+		t.Errorf("ResolveDiscussion must not be called without a thread id; got %+v", fp.resolves)
+	}
+	for _, c := range fp.comments {
+		if strings.Contains(c.Body, "couldn't resolve") {
+			t.Errorf("must not report a resolve failure for a comment with no thread; got %q", c.Body)
+		}
+	}
+}
+
+// ADR-0115: the summary reply must be posted BEFORE the thread is
+// resolved — resolving first collapses the thread on both platforms, so
+// the reviewer would have to expand it to find out what syntropy did.
+func TestResume_NoteAdded_Done_RepliesBeforeResolving(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed Foo to Bar"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo", DiscussionID: "disc-order"},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	want := []string{"reply", "resolve"}
+	if len(fp.callOrder) != len(want) || fp.callOrder[0] != want[0] || fp.callOrder[1] != want[1] {
+		t.Errorf("want the summary reply then the resolve, got %v", fp.callOrder)
+	}
+}
+
 // Regression: invokeForEvent must NOT pause when Commit returns ErrNoChanges
 // (e.g. the runner ran `go build`, producing only a binary artefact that
 // our staging filter excluded, so HasChanges=true but nothing was staged).
@@ -2548,10 +2648,13 @@ func TestResume_NoteAdded_AdoptedUnit_PushesToMRsActualBranch(t *testing.T) {
 	}
 }
 
-// A Continue decision means the reviewer's feedback isn't fully addressed
-// yet — unlike Done, the originating discussion thread must NOT be
-// resolved, so it stays visibly open for whatever event continues it.
-func TestResume_NoteAdded_DecisionContinue_DoesNotResolveDiscussion(t *testing.T) {
+// A Continue decision leaves real work outstanding, but nothing
+// re-invokes the unit on its own, so an open thread buys no automatic
+// follow-up and instead blocks auto-merge until a human resolves it by
+// hand (ADR-0115 supersedes ADR-0066 on this point). Continue therefore
+// resolves the thread like Done, and keeps the remainder visible through
+// its "Partial progress / More work is needed" wording instead.
+func TestResume_NoteAdded_DecisionContinue_ResolvesDiscussion(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "Partial slice shipped."}})
@@ -2567,8 +2670,8 @@ func TestResume_NoteAdded_DecisionContinue_DoesNotResolveDiscussion(t *testing.T
 	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if len(fp.resolves) != 0 {
-		t.Errorf("DecisionContinue must not resolve the discussion thread yet; resolves=%+v", fp.resolves)
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-100" {
+		t.Errorf("DecisionContinue must resolve the originating thread so auto-merge isn't blocked; resolves=%+v", fp.resolves)
 	}
 	if len(fp.replies) != 1 || fp.replies[0].DiscussionID != "disc-100" {
 		t.Fatalf("expected one reply in the originating thread; got %+v", fp.replies)

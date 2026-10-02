@@ -161,5 +161,6 @@ forces or unlocks.
 | 0112 | OpenHands runner: per-Run Agent Server subprocess, reused decision-marker protocol, planning stays Claude-only | Accepted | 2026-09-03 |
 | 0113 | OpenHands Agent Server — five schema corrections from a local spike (amends ADR-0112) | Accepted | 2026-09-07 |
 | 0114 | `syntropy config check` preflights OpenHands' undeclared runtime dependencies (tmux, libtmux, openhands-tools) | Accepted | 2026-09-14 |
+| 0115 | Every "handled it" reply resolves the thread, and a failed resolve is reported (supersedes ADR-0066's Done-only resolution) | Accepted | 2026-10-02 |
 
 For the operator how-to that puts ADR-0112/ADR-0113 into practice — the opt-in flag, OS runtime dependencies, daemon flags/env vars, and the LiteLLM model-prefix requirement — see [README.md § Enabling OpenHands (opt-in)](../README.md#enabling-openhands-opt-in).
