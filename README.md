@@ -42,6 +42,8 @@ You hand syntropy a spec — "migrate `internal/legacy` to `internal/v2` across 
 
 Each MR is small — typically tens of lines, one logical change, scoped to a single unit. The next link in the chain doesn't exist yet when you're reviewing the current one.
 
+"Small" isn't left to the planner's judgement: your spec's **Planned increments** section lists one line per MR, you review that breakdown before the Run starts, and the planner then ships exactly one line at a time ([ADR-0117](decisions/0117-planned-increments-list-is-authoritative.md)).
+
 The chain self-propels: you act only at the natural human checkpoint — *is this MR good?* — and the daemon handles everything else (opening, pushing, status comments, addressing review comments, retrying flaky CI, picking the next unit, opening the next MR).
 
 ```
@@ -63,14 +65,15 @@ The chain self-propels: you act only at the natural human checkpoint — *is thi
    └──────────────────────────────────────────────────┘
 ```
 
-Comments are syntropy's only communication channel. Reply with `/syntropy pause`, `/syntropy resume`, `/syntropy skip [reason]`, `/syntropy retry`, `/syntropy prompt <text>`, `/syntropy status`, `/syntropy stop`, or `/syntropy abandon` (two-tap, 12h confirmation window). A bare `/syntropy` posts the verb list; anything else after `/syntropy` is treated as a freeform instruction and injected straight into the next subagent call, same as `/syntropy prompt`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
+Comments are syntropy's only communication channel. A review comment isn't acted on the instant it lands: comments collect for three minutes of quiet and are then answered as one turn and one push, so a review pass costs one update round instead of one per comment. `/syntropy retry` starts it now if you don't want to wait. Reply with `/syntropy pause`, `/syntropy resume`, `/syntropy skip [reason]`, `/syntropy retry`, `/syntropy prompt <text>`, `/syntropy status`, `/syntropy stop`, or `/syntropy abandon` (two-tap, 12h confirmation window). A bare `/syntropy` posts the verb list; anything else after `/syntropy` is treated as a freeform instruction and injected straight into the next subagent call, same as `/syntropy prompt`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
 
 ### How it does it
 
 - **Durable state machine.** Built on [luno/workflow](https://github.com/luno/workflow); sqlite-backed RecordStore. Survives daemon restart, can sleep idle for days between events at zero LLM cost.
 - **Event-driven.** Polls the provider every 30 seconds by default (zero token cost; ADR-0031). Webhook mode available for sub-second latency on hosts with a stable public URL.
 - **Per-unit git worktree.** Each MR's runner works in `~/.syntropy/runs/<runID>/worktrees/<unitID>` — no contamination of your main checkout.
-- **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub (ADR-0034). The reviewer sees their comment close itself.
+- **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub (ADR-0034). The reviewer sees their comment close itself — on a partial fix too, since an open thread blocks auto-merge (ADR-0115).
+- **One turn per review pass.** Queued comments are drained together after three minutes of quiet, capped at fifteen minutes from the first one so a steady trickle can't defer the turn indefinitely (ADR-0118). The queue is durable, so a daemon restart mid-window loses nothing.
 - **Pluggable runner, more agents/harnesses planned.** Claude Code and OpenHands (opt-in) are both shipping adapters today, and extending further is a design goal, not an afterthought — next up are the other most globally-used coding agents/harnesses (GitHub Copilot, Cursor, OpenAI's Codex CLI, OpenCode), plus Qwen Code, or a local script. Anything fitting the `runner.Runner` interface (ADR-0007) plugs in without touching the core state machine.
 
 Full architecture: [`DESIGN.md`](DESIGN.md). Every meaningful design choice has an ADR in [`decisions/`](decisions/).
@@ -139,6 +142,13 @@ status: ready
 
 For each service still importing `internal/legacy`, switch to
 `internal/v2`. Preserve public function signatures.
+
+## Planned increments
+
+1. Move shared helpers to internal/v2, keep legacy re-exporting them.
+2. Switch services/billing to internal/v2.
+3. Switch services/promo to internal/v2.
+4. Delete internal/legacy and its re-exports.
 YAML
 
 # Start the daemon (poll mode; no public URL needed) — using the release binary installed above.
@@ -147,6 +157,8 @@ syntropy daemon --commit-author "Your Name" --commit-email "you@example.com" &
 # Trigger.
 syntropy start --spec ~/syntropy-specs/migrate.spec.md
 ```
+
+The **Planned increments** section is the part worth getting right: the planner ships one line from it per MR, in order, and won't bundle two lines together ([ADR-0117](decisions/0117-planned-increments-list-is-authoritative.md)). One line per MR, 18 words or so each, and each line has to stand alone as something a reviewer can merge. A spec with no such section falls back to the planner's own judgement about what fits in one MR.
 
 The first MR appears on the target repo within a minute or two. Review it, merge it, and the next opens automatically.
 
@@ -191,6 +203,9 @@ Before relying on this in production: per ADR-0112's Consequences, no tagged rel
 - **Author-vs-reviewer privilege model.** `/syntropy <verb>` control commands from the author bypass the LLM entirely and route straight to a state transition; everyone else's comments go through the Starlark filter.
 - **Deterministic comment filtering.** Bot noise (CI status pings, formatter comments) is skipped without spending a single token, via a Starlark filter with per-Run override and learned skip-phrases.
 - **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub.
+- **Batched review comments.** A reviewer's comments collect for three minutes of quiet and are then answered by **one** runner turn and **one** push, with a reply and a resolve on every thread — rather than a turn and a push per comment ([ADR-0118](decisions/0118-batch-review-comments-into-one-turn.md)). `/syntropy retry` or `/syntropy prompt <text>` starts the turn immediately; `/syntropy status` says how many comments are queued and when it's due. CI failures and conflicts aren't batched.
+- **Short bot comments.** Posted summaries are capped at 60 words (90 at the outside), with fenced code excluded from the count, so a review thread stays readable ([ADR-0119](decisions/0119-cap-bot-comment-length.md)).
+- **The spec's increment list is the plan.** A spec's "Planned increments" section — one reviewed line per MR — is what the planner follows: one line, one MR, no bundling ([ADR-0117](decisions/0117-planned-increments-list-is-authoritative.md)).
 - **CI-failure triage.** Classifies a pipeline failure as a known flake (retry, no LLM) or a novel failure (subagent diagnose + fix), bounded by a retry cap before pausing for a human.
 - **Pausable and resumable, not just pass/fail.** Transient runner or git errors during a unit's initial turn pause the Run for `/syntropy resume` instead of killing it outright — `Failed` is reserved for genuinely unrecoverable configuration problems.
 - **Self-healing via reconciliation.** A periodic sweep detects Runs stuck on a lost event and wakes them back up; a merge/close mis-detected mid-propagation gets re-verified before a unit is wrongly blacklisted.
