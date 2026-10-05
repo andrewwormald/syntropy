@@ -2333,6 +2333,132 @@ func TestResume_NoteAdded_Done_RepliesBeforeResolving(t *testing.T) {
 	}
 }
 
+// A batch of comments is one runner turn, one commit and one push, with a
+// reply and a resolve on every thread it answered. This is the shape the
+// whole batching change exists for: a reviewer leaving five comments used
+// to get five runner turns and up to five pushes, which is how MRs reached
+// 30+ update rounds.
+func TestInvokeForEvent_Batch_OneTurnRepliesAndResolvesEveryThread(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Addressed all three"}}
+	d.withRunner(t, fr)
+	g := &fakeGit{hasChanges: boolPtr(true)}
+	d.withGit(g)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 1, Body: "first", DiscussionID: "disc-1"},
+	}
+	batch := []PendingNote{
+		{Note: provider.Note{ID: 1, Body: "rename Foo", DiscussionID: "disc-1"}, Author: provider.User{Handle: "reviewer"}},
+		{Note: provider.Note{ID: 2, Body: "add a test", DiscussionID: "disc-2"}, Author: provider.User{Handle: "reviewer"}},
+		{Note: provider.Note{ID: 3, Body: "drop the dead branch", DiscussionID: "disc-3"}, Author: provider.User{Handle: "reviewer"}},
+	}
+
+	next, err := d.invokeForEvent(t.Context(), r, "u", ev, batch)
+	if err != nil {
+		t.Fatalf("invokeForEvent: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("a batch must be ONE runner turn, got %d", len(fr.calls))
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("a batch must be one push, got %d", len(g.pushes))
+	}
+	for _, want := range []string{"rename Foo", "add a test", "drop the dead branch", "Address all of them in this one turn"} {
+		if !strings.Contains(fr.calls[0].CommentBody, want) {
+			t.Errorf("batched CommentBody missing %q; got:\n%s", want, fr.calls[0].CommentBody)
+		}
+	}
+	gotReplies := map[string]bool{}
+	for _, c := range fp.replies {
+		gotReplies[c.DiscussionID] = true
+	}
+	gotResolves := map[string]bool{}
+	for _, c := range fp.resolves {
+		gotResolves[c.DiscussionID] = true
+	}
+	for _, id := range []string{"disc-1", "disc-2", "disc-3"} {
+		if !gotReplies[id] {
+			t.Errorf("no reply on %s; replies=%+v", id, fp.replies)
+		}
+		if !gotResolves[id] {
+			t.Errorf("%s left unresolved; resolves=%+v", id, fp.resolves)
+		}
+	}
+}
+
+// Comments with no resolvable thread (GitHub issue_comment / review body)
+// must collapse to ONE top-level MR comment, however many of them the batch
+// holds — three identical conversation comments would be worse than the
+// problem batching set out to fix.
+func TestInvokeForEvent_Batch_CollapsesThreadlessNotesToOneComment(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Done"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{Kind: provider.EventNoteAdded, MR: mr, Author: provider.User{Handle: "reviewer"}}
+	batch := []PendingNote{
+		{Note: provider.Note{ID: 1, Body: "one"}, Author: provider.User{Handle: "reviewer"}},
+		{Note: provider.Note{ID: 2, Body: "two"}, Author: provider.User{Handle: "reviewer"}},
+		{Note: provider.Note{ID: 3, Body: "three"}, Author: provider.User{Handle: "reviewer"}},
+	}
+	if _, err := d.invokeForEvent(t.Context(), r, "u", ev, batch); err != nil {
+		t.Fatalf("invokeForEvent: %v", err)
+	}
+
+	var addressed int
+	for _, c := range fp.comments {
+		if strings.Contains(c.Body, "Addressed") {
+			addressed++
+		}
+	}
+	if addressed != 1 {
+		t.Errorf("want exactly one top-level summary comment for threadless notes, got %d: %+v", addressed, fp.comments)
+	}
+	if len(fp.resolves) != 0 {
+		t.Errorf("notes with no thread id must not reach ResolveDiscussion; got %+v", fp.resolves)
+	}
+}
+
+// One outside reviewer anywhere in the batch makes the whole turn reviewer
+// feedback, so ADR-0072 still routes solution-steering suggestions to Ask
+// rather than auto-implementing them.
+func TestInvokeForEvent_Batch_CommenterIsAuthorIsAllOrNothing(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Done"}}
+	d.withRunner(t, fr)
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{Kind: provider.EventNoteAdded, MR: mr, Author: provider.User{Handle: "andreww"}, IsAuthor: true}
+	batch := []PendingNote{
+		{Note: provider.Note{ID: 1, Body: "mine", DiscussionID: "d1"}, Author: provider.User{Handle: "andreww"}, IsAuthor: true},
+		{Note: provider.Note{ID: 2, Body: "theirs", DiscussionID: "d2"}, Author: provider.User{Handle: "reviewer"}},
+	}
+	if _, err := d.invokeForEvent(t.Context(), r, "u", ev, batch); err != nil {
+		t.Fatalf("invokeForEvent: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("want one runner call, got %d", len(fr.calls))
+	}
+	if fr.calls[0].CommenterIsAuthor {
+		t.Error("CommenterIsAuthor must be false when any comment in the batch is from an outside reviewer")
+	}
+}
+
 // Regression: invokeForEvent must NOT pause when Commit returns ErrNoChanges
 // (e.g. the runner ran `go build`, producing only a binary artefact that
 // our staging filter excluded, so HasChanges=true but nothing was staged).

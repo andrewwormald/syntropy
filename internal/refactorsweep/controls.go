@@ -408,5 +408,5 @@ func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, Agen
 	// prefix doesn't leak into the instruction text.
 	instruction, _ := matchControlPrefix(ev.Note.Body)
 	r.Object.PromptInjection = instruction
-	return d.invokeForEvent(ctx, r, unitID, ev)
+	return d.invokeForEvent(ctx, r, unitID, ev, nil)
 }

@@ -1186,6 +1186,70 @@ func resolveOriginatingThread(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 }
 
+// replyToAllThreads posts body into every distinct thread the batch came
+// from. A reviewer who left five comments gets the answer on all five
+// threads, not just the one that happened to be first in the queue.
+//
+// Notes with no thread id (a GitHub issue_comment or review body, a GitLab
+// non-diff discussion) collapse to a single top-level MR comment however
+// many of them the batch holds — N identical conversation comments would be
+// worse than one. Duplicate thread ids collapse the same way, since a
+// reviewer can leave several comments on one thread.
+func replyToAllThreads(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, mr provider.MR, notes []PendingNote, body string) {
+	var postedTopLevel bool
+	seen := make(map[string]bool, len(notes))
+	for _, n := range notes {
+		id := n.Note.DiscussionID
+		switch {
+		case id == "":
+			if postedTopLevel {
+				continue
+			}
+			postedTopLevel = true
+		case seen[id]:
+			continue
+		default:
+			seen[id] = true
+		}
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, id, body)
+	}
+}
+
+// resolveAllThreads resolves every distinct thread the batch came from, so
+// one batched turn closes all of the comments it answered rather than
+// leaving the rest of them blocking auto-merge (ADR-0115).
+func resolveAllThreads(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, mr provider.MR, notes []PendingNote) {
+	seen := make(map[string]bool, len(notes))
+	for _, n := range notes {
+		id := n.Note.DiscussionID
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		resolveOriginatingThread(ctx, r, p, mr, id)
+	}
+}
+
+// formatCommentBatch renders several review comments as one runner input.
+// A single comment is passed through verbatim — the runner's prompt has
+// always received a bare comment body and there is no reason to wrap it —
+// so only a real batch gets the numbered, attributed framing.
+func formatCommentBatch(notes []PendingNote) string {
+	if len(notes) == 1 {
+		return notes[0].Note.Body
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d review comments arrived together. Address all of them in this one turn.\n", len(notes))
+	for i, n := range notes {
+		handle := n.Author.Handle
+		if handle == "" {
+			handle = "unknown"
+		}
+		fmt.Fprintf(&b, "\n### Comment %d — @%s\n\n%s\n", i+1, handle, strings.TrimSpace(n.Note.Body))
+	}
+	return b.String()
+}
+
 // isOwnEcho reports whether an inbound note is one the daemon itself
 // posted recently. Called at the top of resume() to short-circuit the
 // self-comment loop before any filter, control-verb parsing, or runner
@@ -1366,7 +1430,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 			return StatusPaused, nil
 		}
 		if strings.HasPrefix(r.Object.PauseReason, askPausePrefix) {
-			return d.invokeForEvent(ctx, r, unitID, ev)
+			return d.invokeForEvent(ctx, r, unitID, ev, nil)
 		}
 
 		// Repeated-pause escalation (ADR-0111): once this pause has already
@@ -1378,7 +1442,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		}
 
 		before := r.Object.PauseReason
-		if _, err := d.invokeForEvent(ctx, r, unitID, ev); err != nil {
+		if _, err := d.invokeForEvent(ctx, r, unitID, ev, nil); err != nil {
 			return StatusPaused, err
 		}
 		if r.Object.PauseReason == before {
@@ -1410,7 +1474,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// MRMerged/MRClosed), since a conflict is not lifecycle truth that
 	// should override whatever the Run is paused about.
 	if ev.Kind == provider.EventMRConflict {
-		return d.invokeForEvent(ctx, r, unitID, ev)
+		return d.invokeForEvent(ctx, r, unitID, ev, nil)
 	}
 
 	// Remaining informational lifecycle events (MRMerged/MRClosed are
@@ -1449,7 +1513,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		r.Object.PauseReason = fmt.Sprintf("filter paused on %s event", ev.Kind)
 		return StatusPaused, nil
 	case filter.OutcomeInvokeSubagent:
-		return d.invokeForEvent(ctx, r, unitID, ev)
+		return d.invokeForEvent(ctx, r, unitID, ev, nil)
 	}
 	return StatusAwaitingMerge, fmt.Errorf("resume: unknown filter outcome %v", outcome)
 }
@@ -1487,12 +1551,31 @@ func (d *Deps) reactToNote(ctx context.Context, r *workflow.Run[AgentState, Agen
 // Git push of any code changes the runner made is deferred to the next
 // commit (alongside work()'s push). Until then, status comments are still
 // posted so the human can see what the agent decided.
-func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, ev provider.Event) (AgentStatus, error) {
+func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, ev provider.Event, batch []PendingNote) (AgentStatus, error) {
 	rn, err := d.Runners.Get(r.Object.RunnerName)
 	if err != nil {
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: runner: %w", err)
 	}
 	p := d.Providers[r.Object.ProviderName] // already validated in setup
+
+	// notes is what this turn addresses. An empty batch means "just this
+	// event", which is every caller today and stays byte-for-byte the old
+	// behaviour; a non-empty batch is a drained comment queue, several
+	// reviewer comments answered by one runner turn and one push instead of
+	// one turn and one push each.
+	//
+	// For a non-note event (CI failure, conflict) the single synthesised
+	// entry carries ev's zero Note, so every reply below lands as a
+	// top-level MR comment exactly as it did before batching existed.
+	notes := batch
+	if len(notes) == 0 {
+		notes = []PendingNote{{Note: ev.Note, Author: ev.Author, IsAuthor: ev.IsAuthor}}
+	}
+	// primaryDiscussionID is where a one-off notice goes — a pause, a git
+	// failure, a runner error. Those are about the turn, not about any one
+	// comment, so they are posted once rather than copied onto every thread
+	// in the batch.
+	primaryDiscussionID := notes[0].Note.DiscussionID
 
 	// Acknowledge receipt immediately, before the (potentially long) runner
 	// invocation below, so the commenter knows everflow picked it up rather
@@ -1500,7 +1583,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	// best-effort — reaction failure (or a stream with no reactions
 	// endpoint, see ADR-0050) must never block the actual work.
 	if ev.Kind == provider.EventNoteAdded {
-		_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, ev.Note.ID, ev.Note.Stream, "eyes")
+		for _, n := range notes {
+			_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, n.Note.ID, n.Note.Stream, "eyes")
+		}
 	}
 
 	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
@@ -1516,7 +1601,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	if sErr := d.Git.SyncWithBase(ctx, worktree, baseBranch); sErr != nil {
 		mr := r.Object.InFlight[unitID]
 		r.Object.PauseReason = fmt.Sprintf("git SyncWithBase failed before handling %s: %v", ev.Kind, sErr)
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 			fmt.Sprintf("⚠️ Paused — couldn't sync this branch with `%s` before handling the event: `%v`. Reply `/syntropy retry` after fixing.", baseBranch, sErr))
 		return StatusPaused, nil
 	}
@@ -1538,20 +1623,41 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// and skipped. Screening is best-effort in the sense that a runner
 		// without CommentScreener support (no cheap classification call)
 		// simply isn't gated — see runner.CommentScreener's doc comment.
-		if !ev.IsAuthor {
-			if screener, ok := rn.(runner.CommentScreener); ok {
-				verdict, reason, sErr := screener.ScreenComment(ctx, ev.Note.Body)
-				if sErr != nil || verdict != runner.VerdictSafe {
-					mr := r.Object.InFlight[unitID]
-					r.Object.PauseReason = fmt.Sprintf("comment risk-screen verdict %q for %s: %s", verdict, ev.Kind, reason)
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-						fmt.Sprintf("⚠️ Paused — this comment was flagged by the risk screen (%s): %s\n\nReply `/syntropy retry` after addressing this.", verdict, reason))
-					return StatusPaused, nil
+		// Every comment in the batch is screened, not just the first: one
+		// unsafe comment among five must still gate the turn, and the reply
+		// has to say which one so the human knows what to look at.
+		if screener, ok := rn.(runner.CommentScreener); ok {
+			for i, n := range notes {
+				if n.IsAuthor {
+					continue
 				}
+				verdict, reason, sErr := screener.ScreenComment(ctx, n.Note.Body)
+				if sErr == nil && verdict == runner.VerdictSafe {
+					continue
+				}
+				mr := r.Object.InFlight[unitID]
+				r.Object.PauseReason = fmt.Sprintf("comment risk-screen verdict %q for %s: %s", verdict, ev.Kind, reason)
+				where := ""
+				if len(notes) > 1 {
+					where = fmt.Sprintf(" (comment %d of %d in this batch)", i+1, len(notes))
+				}
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, n.Note.DiscussionID,
+					fmt.Sprintf("⚠️ Paused — this comment was flagged by the risk screen (%s)%s: %s\n\nReply `/syntropy retry` after addressing this.", verdict, where, reason))
+				return StatusPaused, nil
 			}
 		}
-		req.CommentBody = ev.Note.Body
-		req.CommenterIsAuthor = ev.IsAuthor
+		req.CommentBody = formatCommentBatch(notes)
+		// ADR-0072's trust split is all-or-nothing across the batch: one
+		// outside reviewer among otherwise-author comments means the whole
+		// turn is treated as reviewer feedback, so solution-steering
+		// suggestions still route to Ask instead of being auto-implemented.
+		req.CommenterIsAuthor = true
+		for _, n := range notes {
+			if !n.IsAuthor {
+				req.CommenterIsAuthor = false
+				break
+			}
+		}
 		req.SkillCommand = fmt.Sprintf("/syntropy-address-comment %s", unitID)
 		phase = PhaseAddressComment
 	case provider.EventPipelineFailed:
@@ -1566,7 +1672,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if cErr != nil {
 			mr := r.Object.InFlight[unitID]
 			r.Object.PauseReason = fmt.Sprintf("couldn't list conflicted files before handling %s: %v", ev.Kind, cErr)
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 				fmt.Sprintf("⚠️ Paused — couldn't list conflicted files for this branch: `%v`. Reply `/syntropy retry` after fixing.", cErr))
 			return StatusPaused, nil
 		}
@@ -1588,7 +1694,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	if err := d.verifyIsolatedWorktree(ctx, worktree); err != nil {
 		mr := r.Object.InFlight[unitID]
 		r.Object.PauseReason = fmt.Sprintf("worktree isolation check failed before handling %s: %v", ev.Kind, err)
-		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 			fmt.Sprintf("⚠️ Paused — worktree isolation check failed before handling the event: `%v`. Reply `/syntropy retry` after fixing.", err))
 		return StatusPaused, nil
 	}
@@ -1637,7 +1743,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
 				if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
 					if ps.OverCap() {
-						_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 							fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `syntropy phrases promote` or trim by hand.", filter.MaxPerRunEntries))
 					}
 				}
@@ -1660,7 +1766,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// so the author can investigate; we still have the MR to
 			// recover with.
 			r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 				fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/syntropy retry` to try again.", phase, runErr))
 			return StatusPaused, nil
 		}
@@ -1696,7 +1802,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			hasWork, gErr := d.Git.HasWorkBeyondBase(ctx, req.Worktree, branch)
 			if gErr != nil {
 				r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, gErr))
 				return StatusPaused, nil
 			}
@@ -1705,9 +1811,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				// change anything. Note that on the MR and stay AwaitingMerge —
 				// the reviewer can clarify if needed. Resolve the thread anyway
 				// (the comment was answered, even if not via code).
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				replyToAllThreads(ctx, r, p, mr, notes,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-				resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
+				resolveAllThreads(ctx, r, p, mr, notes)
 				return StatusAwaitingMerge, nil
 			}
 
@@ -1728,13 +1834,13 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				}
 				if hookErr != nil {
 					r.Object.PauseReason = fmt.Sprintf("commit rejected by pre-commit hook %d times in a row during %s: %s", hookRetries, phase, hookErr.Output)
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 						fmt.Sprintf("⚠️ Paused — the pre-commit hook keeps rejecting the commit after %d retries during %s:\n```\n%s\n```\nReply `/syntropy retry` after fixing.", hookRetries, phase, hookErr.Output))
 					return StatusPaused, nil
 				}
 				if !errors.Is(gErr, git.ErrNoChanges) {
 					r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 						fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
 					return StatusPaused, nil
 				}
@@ -1746,7 +1852,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, branch)
 				if sErr != nil {
 					r.Object.PauseReason = fmt.Sprintf("git DiffShortstat error after %s: %v", phase, sErr)
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 						fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, sErr))
 					return StatusPaused, nil
 				}
@@ -1754,18 +1860,18 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 					// Same outcome as the !hasWork branch above: post a note,
 					// stay AwaitingMerge. Do NOT pause — the runner addressing
 					// a comment verbally (without code change) is normal.
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					replyToAllThreads(ctx, r, p, mr, notes,
 						fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-					// Resolve so the thread doesn't sit open and block
+					// Resolve so the threads don't sit open and block
 					// auto-merge; a failed resolve is reported, not dropped.
-					resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
+					resolveAllThreads(ctx, r, p, mr, notes)
 					return StatusAwaitingMerge, nil
 				}
 				// Self-committed work: fall through to Push.
 			}
 			if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
 				r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 					fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
 				return StatusPaused, nil
 			}
@@ -1793,7 +1899,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 					addressedBody += "\n\nDiff: " + stat
 				}
 			}
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
+			replyToAllThreads(ctx, r, p, mr, notes, addressedBody)
 
 			// Push landed and the reviewer has been told what happened, so
 			// resolve the originating thread — on Continue as well as Done
@@ -1804,7 +1910,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// needed" wording above is what keeps the remainder visible.
 			// Posted after the summary reply so the reply lands in the thread
 			// before the platform collapses it.
-			resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
+			resolveAllThreads(ctx, r, p, mr, notes)
 			return StatusAwaitingMerge, nil
 		case DecisionNoChange:
 			// The runner can still have edited files even though it concluded
@@ -1829,21 +1935,21 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// changes needed" on every one of those would be genuine noise
 			// a human never asked for, unlike a one-off comment.
 			if ev.Kind == provider.EventNoteAdded {
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				replyToAllThreads(ctx, r, p, mr, notes,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-				resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
+				resolveAllThreads(ctx, r, p, mr, notes)
 			}
 			return StatusAwaitingMerge, nil
 		case DecisionAsk:
 			d.discardStrayWork(ctx, req.Worktree)
 			r.Object.PauseReason = askPausePrefix + resp.Question
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 				fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 			return StatusPaused, nil
 		case DecisionFail:
 			d.discardStrayWork(ctx, req.Worktree)
 			r.Object.PauseReason = resp.Summary
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 				fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
 			return StatusPaused, nil
 		case DecisionRetryCI:
@@ -1860,19 +1966,19 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			count := r.Object.CIRetryCounts[unitID]
 			if count > maxCIRetries {
 				r.Object.PauseReason = fmt.Sprintf("CI failure retried %d times without resolving (%s): %s", maxCIRetries, phase, resp.Summary)
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 					fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, resp.Summary))
 				return StatusPaused, nil
 			}
 			for _, job := range ev.Pipeline.FailedJobs {
 				if rErr := p.RetryPipelineJob(ctx, mr.ProjectID, job.ID); rErr != nil {
 					r.Object.PauseReason = fmt.Sprintf("failed to retry CI job %d during %s: %v", job.ID, phase, rErr)
-					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 						fmt.Sprintf("⚠️ Paused — CI looked transient but retrying job %d failed: `%v`. Reply `/syntropy retry` after fixing.", job.ID, rErr))
 					return StatusPaused, nil
 				}
 			}
-			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
 				fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, resp.Summary))
 			return StatusAwaitingMerge, nil
 		}

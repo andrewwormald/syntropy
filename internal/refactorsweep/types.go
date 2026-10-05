@@ -40,6 +40,18 @@ func (s AgentStatus) String() string {
 	}[s]
 }
 
+// PendingNote is one review comment, carried with everything a later
+// batched turn needs to act on it. provider.Note has no author of its own —
+// the author rides on the Event — so a note queued now and addressed in a
+// few minutes' time would otherwise lose the attribution that ADR-0072's
+// author-vs-reviewer trust split depends on.
+type PendingNote struct {
+	Note       provider.Note `json:"note"`
+	Author     provider.User `json:"author"`
+	IsAuthor   bool          `json:"is_author"`   // Note.Author is the Run's author (ADR-0017)
+	ReceivedAt time.Time     `json:"received_at"` // when the daemon ingested it; drives the batching window
+}
+
 // AgentState is the per-Run durable object. Everything everflow needs to
 // resume after a daemon restart lives here.
 type AgentState struct {
