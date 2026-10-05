@@ -874,3 +874,18 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"I need y
 		t.Errorf("Response.Summary should carry the clean text too, got %q", resp.Summary)
 	}
 }
+
+// The Go-side clamp (ADR-0119) is a backstop; the prompt is the mechanism.
+// Without the rule here, every comment syntropy posts relies on the runner
+// guessing how much a human wants to read.
+func TestDecisionProtocol_CarriesTheSummaryWordLimit(t *testing.T) {
+	for _, want := range []string{
+		"60 words or fewer",
+		"90 words",
+		"don't count toward the limit",
+	} {
+		if !strings.Contains(decisionProtocol, want) {
+			t.Errorf("decisionProtocol missing %q", want)
+		}
+	}
+}

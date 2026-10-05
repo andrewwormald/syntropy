@@ -454,6 +454,14 @@ The text before the tag becomes the recorded Summary; syntropy strips
 the tag itself from the output. Only the LAST occurrence of the tag in
 your response is read, so feel free to write naturally up to that point.
 
+Keep that Summary to 60 words or fewer. It is posted verbatim as a comment on
+the MR, and a human has to read every one of them — go to 90 words only when
+a shorter summary would actually mislead. Fenced code blocks, diffs and file
+paths don't count toward the limit, so show the change instead of describing
+it: a short list, a before/after pair, or small ASCII art where structure
+communicates faster than sentences. No preamble, and no restating the comment
+you were answering.
+
 This tag is mandatory on every turn, with no exceptions — including a
 turn where a tool call you needed gets denied or blocked partway
 through (e.g. a permission rule refuses a command you tried to run).

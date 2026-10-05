@@ -5285,3 +5285,42 @@ func TestMarkUnitMerged_DropsQueuedComments(t *testing.T) {
 		t.Errorf("a merged unit's queued comments should be dropped; got %+v", r.Object.PendingNotes)
 	}
 }
+
+// --- summary word cap (ADR-0119) ---
+
+func TestClampSummary_LeavesAShortSummaryByteForByte(t *testing.T) {
+	in := "Renamed Foo to Bar in three call sites and updated the test.\nNothing else changed."
+
+	if got := clampSummary(in, maxSummaryWords); got != in {
+		t.Errorf("a summary inside the budget must be returned unchanged;\nwant %q\ngot  %q", in, got)
+	}
+}
+
+func TestClampSummary_TruncatesRunawayProse(t *testing.T) {
+	in := strings.TrimSpace(strings.Repeat("word ", 300))
+
+	got := clampSummary(in, maxSummaryWords)
+
+	if !strings.HasSuffix(got, "_(truncated)_") {
+		t.Errorf("a 300-word summary should be marked truncated; got %q", got)
+	}
+	if n := len(strings.Fields(strings.TrimSuffix(got, " … _(truncated)_"))); n != maxSummaryWords {
+		t.Errorf("want %d words kept, got %d", maxSummaryWords, n)
+	}
+}
+
+// Code is what a reviewer actually wants to see, so it neither counts toward
+// the budget nor gets cut in half.
+func TestClampSummary_DoesNotCountOrCutFencedCode(t *testing.T) {
+	code := "```go\n" + strings.TrimSpace(strings.Repeat("x := 1\n", 100)) + "\n```"
+	in := "Replaced the loop:\n" + code + "\nTests pass."
+
+	got := clampSummary(in, maxSummaryWords)
+
+	if got != in {
+		t.Errorf("fenced code must not count toward the word budget;\nwant unchanged, got:\n%s", got)
+	}
+	if strings.Count(got, "```") != 2 {
+		t.Errorf("clamping must not cut a fence in half; got:\n%s", got)
+	}
+}

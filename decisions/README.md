@@ -163,5 +163,6 @@ forces or unlocks.
 | 0114 | `syntropy config check` preflights OpenHands' undeclared runtime dependencies (tmux, libtmux, openhands-tools) | Accepted | 2026-09-14 |
 | 0115 | Every "handled it" reply resolves the thread, and a failed resolve is reported (supersedes ADR-0066's Done-only resolution) | Accepted | 2026-10-02 |
 | 0118 | Review comments are batched into one turn per quiet window (3m sliding, 15m cap) | Accepted | 2026-10-05 |
+| 0119 | Bot comments are capped at 60 words, 90 hard, code excluded | Accepted | 2026-10-05 |
 
 For the operator how-to that puts ADR-0112/ADR-0113 into practice — the opt-in flag, OS runtime dependencies, daemon flags/env vars, and the LiteLLM model-prefix requirement — see [README.md § Enabling OpenHands (opt-in)](../README.md#enabling-openhands-opt-in).
