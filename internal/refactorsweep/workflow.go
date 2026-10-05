@@ -1157,6 +1157,35 @@ func postBotReply(ctx context.Context, r *workflow.Run[AgentState, AgentStatus],
 	return p.PostComment(ctx, projectID, mrIID, body)
 }
 
+// resolveOriginatingThread resolves the review thread an event's comment
+// came from, best-effort, and surfaces a failure as a reply in that thread
+// rather than swallowing it.
+//
+// Every path that has just told the reviewer their comment was handled
+// calls this (ADR-0115): on GitHub and GitLab alike an unresolved thread
+// is what blocks "merge when ready" / auto-merge, so a thread left open
+// after syntropy said it was addressed stalls the MR with nothing in the
+// Run's own state to show why. The older `_ = p.ResolveDiscussion(...)`
+// form on the no-code-change paths dropped the error entirely, which made
+// that stall invisible — found live, with a human having to resolve
+// threads by hand before auto-merge would fire.
+//
+// A failure is never fatal: the change (if any) is already pushed and the
+// reviewer can resolve manually, so the Run stays on its current status.
+func resolveOriginatingThread(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, mr provider.MR, discussionID string) {
+	if discussionID == "" {
+		// No resolvable thread — a GitLab non-diff discussion, or a GitHub
+		// issue_comment / review-body comment, neither of which lives on a
+		// thread the platform can resolve (see the github provider's
+		// ListNotesSince). Nothing to do, and nothing worth reporting.
+		return
+	}
+	if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discussionID); rErr != nil {
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, discussionID,
+			fmt.Sprintf("ℹ️ I couldn't resolve this thread automatically: `%v`. Please mark it resolved manually — an open thread blocks auto-merge.", rErr))
+	}
+}
+
 // isOwnEcho reports whether an inbound note is one the daemon itself
 // posted recently. Called at the top of resume() to short-circuit the
 // self-comment loop before any filter, control-verb parsing, or runner
@@ -1646,9 +1675,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// produced a real, passing test file that a Continue decision then
 			// left permanently uncommitted, eventually tripping SyncWithBase's
 			// uncommitted-changes guard on a later event. Commit/push exactly
-			// like Done; only the final messaging and discussion-resolution
-			// differ (see isDone below), since Continue means the reviewer's
-			// thread isn't actually settled yet.
+			// like Done; only the final messaging differs (see isDone below),
+			// since Continue means the reviewer's thread isn't actually
+			// settled yet. Both resolve the thread — ADR-0115.
 			isDone := resp.Decision == DecisionDone
 
 			// Did the runner change anything this turn? Compare against the
@@ -1678,9 +1707,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				// (the comment was answered, even if not via code).
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-				if discID := ev.Note.DiscussionID; discID != "" {
-					_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
-				}
+				resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
 				return StatusAwaitingMerge, nil
 			}
 
@@ -1729,10 +1756,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 					// a comment verbally (without code change) is normal.
 					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 						fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-					// Best-effort resolve so the thread doesn't sit open.
-					if discID := ev.Note.DiscussionID; discID != "" {
-						_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
-					}
+					// Resolve so the thread doesn't sit open and block
+					// auto-merge; a failed resolve is reported, not dropped.
+					resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
 					return StatusAwaitingMerge, nil
 				}
 				// Self-committed work: fall through to Push.
@@ -1754,24 +1780,6 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				delete(r.Object.CIRetryCounts, unitID)
 			}
 
-			// Push landed. Resolve the originating discussion thread so the
-			// reviewer sees their comment closed automatically — only when the
-			// runner actually finished (Done). A Continue decision means the
-			// reviewer's feedback isn't fully addressed yet, so the thread
-			// stays open for whatever event continues it. Best-effort — if
-			// resolving fails (auth, deleted thread, provider stub), the
-			// resolve just doesn't happen and the reviewer closes manually.
-			if isDone {
-				if discID := ev.Note.DiscussionID; discID != "" {
-					if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
-						// Surface but don't fail — the change is pushed, that's
-						// what matters.
-						_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-							fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
-					}
-				}
-			}
-
 			// Append actual diff shortstat as a hallucination guard so reviewers
 			// can see whether the runner's summary matches what was actually pushed.
 			var addressedBody string
@@ -1786,6 +1794,17 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				}
 			}
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
+
+			// Push landed and the reviewer has been told what happened, so
+			// resolve the originating thread — on Continue as well as Done
+			// (ADR-0115 supersedes ADR-0066 here). Continue leaves real work
+			// outstanding, but nothing re-invokes this unit on its own, so an
+			// open thread bought no automatic follow-up and instead blocked
+			// auto-merge until a human resolved it by hand; the "More work is
+			// needed" wording above is what keeps the remainder visible.
+			// Posted after the summary reply so the reply lands in the thread
+			// before the platform collapses it.
+			resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
 			return StatusAwaitingMerge, nil
 		case DecisionNoChange:
 			// The runner can still have edited files even though it concluded
@@ -1812,9 +1831,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if ev.Kind == provider.EventNoteAdded {
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
-				if discID := ev.Note.DiscussionID; discID != "" {
-					_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
-				}
+				resolveOriginatingThread(ctx, r, p, mr, ev.Note.DiscussionID)
 			}
 			return StatusAwaitingMerge, nil
 		case DecisionAsk:
