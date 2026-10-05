@@ -4948,3 +4948,180 @@ func TestResume_NoteAdded_CommentScreen_RunnerWithoutScreenerSkipsGate(t *testin
 		t.Errorf("want AwaitingMerge, got %v", next)
 	}
 }
+
+// --- comment batching: the drain timer (ADR-0118) ---
+
+// A Run with nothing queued must carry no timeout at all. The timer runs on
+// every store while in AwaitingMerge, so anything other than the zero time
+// here would create a timeout row for every MR syntropy is babysitting.
+func TestCommentBatchTimer_NoQueueMeansNoTimeout(t *testing.T) {
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+
+	got, err := commentBatchTimer(t.Context(), r, time.Now())
+	if err != nil {
+		t.Fatalf("commentBatchTimer: %v", err)
+	}
+	if !got.IsZero() {
+		t.Errorf("want the zero time (no timeout created) for an empty queue, got %v", got)
+	}
+}
+
+// The window slides off the LAST comment: a reviewer still working down the
+// diff should not have their first comments answered mid-review.
+func TestCommentBatchTimer_WindowSlidesOffTheLastComment(t *testing.T) {
+	now := time.Now()
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {
+			{Note: provider.Note{ID: 1}, ReceivedAt: now.Add(-2 * time.Minute)},
+			{Note: provider.Note{ID: 2}, ReceivedAt: now.Add(-30 * time.Second)},
+		},
+	}
+
+	got, err := commentBatchTimer(t.Context(), r, now)
+	if err != nil {
+		t.Fatalf("commentBatchTimer: %v", err)
+	}
+	want := now.Add(-30 * time.Second).Add(commentBatchWindow)
+	if !got.Equal(want) {
+		t.Errorf("want latest comment + %v = %v, got %v", commentBatchWindow, want, got)
+	}
+}
+
+// ...but the slide is bounded. A reviewer commenting every two minutes must
+// not be able to defer the turn forever while the first commenter waits.
+func TestCommentBatchTimer_HardCapOnASlidingWindow(t *testing.T) {
+	now := time.Now()
+	first := now.Add(-20 * time.Minute)
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {
+			{Note: provider.Note{ID: 1}, ReceivedAt: first},
+			{Note: provider.Note{ID: 2}, ReceivedAt: now},
+		},
+	}
+
+	got, err := commentBatchTimer(t.Context(), r, now)
+	if err != nil {
+		t.Fatalf("commentBatchTimer: %v", err)
+	}
+	want := first.Add(maxCommentBatchDelay)
+	if !got.Equal(want) {
+		t.Errorf("want first comment + %v = %v (the hard cap), got %v", maxCommentBatchDelay, want, got)
+	}
+}
+
+// Duplicate timeout rows are expected (the store doesn't dedupe and the timer
+// re-runs on every store), so a drain that finds nothing must be a clean
+// no-op rather than an error or a wasted runner turn.
+func TestOnCommentBatchTimeout_EmptyQueueIsANoOp(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{}
+	d.withRunner(t, fr)
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+
+	next, err := d.onCommentBatchTimeout(t.Context(), r, time.Now())
+	if err != nil {
+		t.Fatalf("onCommentBatchTimeout: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("an empty queue must not invoke the runner; got %d calls", len(fr.calls))
+	}
+}
+
+// One unit being due must not drain another unit that is still collecting.
+func TestOnCommentBatchTimeout_LeavesAnOpenWindowAlone(t *testing.T) {
+	now := time.Now()
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{}
+	d.withRunner(t, fr)
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {{Note: provider.Note{ID: 1, Body: "still typing"}, ReceivedAt: now}},
+	}
+
+	next, err := d.onCommentBatchTimeout(t.Context(), r, now)
+	if err != nil {
+		t.Fatalf("onCommentBatchTimeout: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("a window that is still open must not be drained; got %d runner calls", len(fr.calls))
+	}
+	if len(r.Object.PendingNotes["u"]) != 1 {
+		t.Errorf("the queue must survive an early drain attempt; got %+v", r.Object.PendingNotes)
+	}
+}
+
+// The MR merged while the window was open: there is nothing left to comment
+// on, so the queue is dropped instead of running a turn against a unit the
+// Run no longer tracks.
+func TestOnCommentBatchTimeout_DropsQueueForAUnitNoLongerInFlight(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{}
+	d.withRunner(t, fr)
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+	delete(r.Object.InFlight, "u")
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {{Note: provider.Note{ID: 1, Body: "too late"}, ReceivedAt: time.Now().Add(-time.Hour)}},
+	}
+
+	if _, err := d.onCommentBatchTimeout(t.Context(), r, time.Now()); err != nil {
+		t.Fatalf("onCommentBatchTimeout: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("must not invoke the runner for a unit that is no longer in flight; got %d calls", len(fr.calls))
+	}
+	if _, ok := r.Object.PendingNotes["u"]; ok {
+		t.Errorf("the stale queue should have been dropped; got %+v", r.Object.PendingNotes)
+	}
+}
+
+// The whole point: a quiet queue drains as ONE runner turn, and the queue is
+// cleared so the next timeout finds nothing.
+func TestOnCommentBatchTimeout_DrainsAsOneTurn(t *testing.T) {
+	past := time.Now().Add(-commentBatchWindow - time.Minute)
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "All three done"}}
+	d.withRunner(t, fr)
+	g := &fakeGit{hasChanges: boolPtr(true)}
+	d.withGit(g)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {
+			{Note: provider.Note{ID: 1, Body: "rename Foo", DiscussionID: "d1"}, Author: provider.User{Handle: "reviewer"}, ReceivedAt: past},
+			{Note: provider.Note{ID: 2, Body: "add a test", DiscussionID: "d2"}, Author: provider.User{Handle: "reviewer"}, ReceivedAt: past},
+			{Note: provider.Note{ID: 3, Body: "drop dead code", DiscussionID: "d3"}, Author: provider.User{Handle: "reviewer"}, ReceivedAt: past},
+		},
+	}
+
+	next, err := d.onCommentBatchTimeout(t.Context(), r, time.Now())
+	if err != nil {
+		t.Fatalf("onCommentBatchTimeout: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("three queued comments must be ONE runner turn, got %d", len(fr.calls))
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("want one push for the batch, got %d", len(g.pushes))
+	}
+	if len(fp.resolves) != 3 {
+		t.Errorf("want all three threads resolved, got %+v", fp.resolves)
+	}
+	if len(r.Object.PendingNotes["u"]) != 0 {
+		t.Errorf("the queue must be cleared after draining; got %+v", r.Object.PendingNotes)
+	}
+}
