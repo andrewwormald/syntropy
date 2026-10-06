@@ -1528,6 +1528,21 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		r.Object.PauseReason = fmt.Sprintf("filter paused on %s event", ev.Kind)
 		return StatusPaused, nil
 	case filter.OutcomeInvokeSubagent:
+		if ev.Kind == provider.EventNoteAdded {
+			// Queue it; the drain timer answers this comment together with
+			// whatever else arrives in the next few minutes (ADR-0118).
+			// Acting on it now is what produced one runner turn, one commit
+			// and one push per comment — the cause of MRs reaching 30+
+			// update rounds during a single review pass.
+			queuePendingNote(r.Object, unitID, ev, time.Now())
+			// Acknowledge now, not when the batch drains: the whole point of
+			// the reaction is that the commenter sees their comment was
+			// picked up, and a silent three-minute gap defeats it.
+			d.reactToNote(ctx, r, ev)
+			return StatusAwaitingMerge, nil
+		}
+		// CI failures and conflicts are already one event per occurrence and
+		// carry no reviewer waiting on a reply — handle them immediately.
 		return d.invokeForEvent(ctx, r, unitID, ev, nil)
 	}
 	return StatusAwaitingMerge, fmt.Errorf("resume: unknown filter outcome %v", outcome)
@@ -1597,10 +1612,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	// than missed it. Only NoteAdded events carry a comment to react to;
 	// best-effort — reaction failure (or a stream with no reactions
 	// endpoint, see ADR-0050) must never block the actual work.
-	if ev.Kind == provider.EventNoteAdded {
-		for _, n := range notes {
-			_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, n.Note.ID, n.Note.Stream, "eyes")
-		}
+	// A batched note was already acknowledged when it was queued, minutes
+	// before this turn started — reacting again here would be a second
+	// identical reaction on the same comment. Only the immediate paths (a
+	// nil batch: CI, conflict, a note during a pause) still react here.
+	if ev.Kind == provider.EventNoteAdded && len(batch) == 0 {
+		_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, ev.Note.ID, ev.Note.Stream, "eyes")
 	}
 
 	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
@@ -2083,6 +2100,10 @@ func (d *Deps) handleMRClosed(ctx context.Context, r *workflow.Run[AgentState, A
 
 func (d *Deps) markUnitMerged(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) AgentStatus {
 	delete(r.Object.InFlight, unitID)
+	// Queued comments die with the MR: there is nothing left to push to, and
+	// a batch drained after the merge would run a turn against a unit the
+	// Run no longer tracks (ADR-0118).
+	delete(r.Object.PendingNotes, unitID)
 	r.Object.Completed = append(r.Object.Completed, CompletedUnit{
 		UnitID:   unitID,
 		MR:       mr,
@@ -2098,6 +2119,7 @@ func (d *Deps) markUnitMerged(ctx context.Context, r *workflow.Run[AgentState, A
 
 func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR, reason string) AgentStatus {
 	delete(r.Object.InFlight, unitID)
+	delete(r.Object.PendingNotes, unitID) // see markUnitMerged
 	r.Object.Blacklisted = append(r.Object.Blacklisted, BlacklistedUnit{
 		UnitID: unitID,
 		MR:     mr,
@@ -2186,6 +2208,34 @@ func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentStat
 	return StatusAwaitingMerge
 }
 
+// queuePendingNote adds a review comment to its unit's batch queue instead
+// of acting on it now (ADR-0118). The drain timer answers the whole queue in
+// one turn once it has been quiet for commentBatchWindow.
+//
+// Re-delivery is deduplicated by note ID: the poller and a webhook can both
+// surface the same comment, and a comment answered twice in one batch is a
+// comment the runner is told about twice.
+func queuePendingNote(s *AgentState, unitID string, ev provider.Event, now time.Time) {
+	if s.PendingNotes == nil {
+		s.PendingNotes = map[string][]PendingNote{}
+	}
+	for _, n := range s.PendingNotes[unitID] {
+		if n.Note.ID != 0 && n.Note.ID == ev.Note.ID {
+			return
+		}
+	}
+	received := now
+	if ev.ReceivedAt != 0 {
+		received = time.Unix(0, ev.ReceivedAt)
+	}
+	s.PendingNotes[unitID] = append(s.PendingNotes[unitID], PendingNote{
+		Note:       ev.Note,
+		Author:     ev.Author,
+		IsAuthor:   ev.IsAuthor,
+		ReceivedAt: received,
+	})
+}
+
 // unitBatchDeadline returns when a unit's queued comments should be drained:
 // the later of them has been quiet for commentBatchWindow, or the earlier of
 // them has waited maxCommentBatchDelay — whichever comes first.
@@ -2253,6 +2303,14 @@ func commentBatchTimer(_ context.Context, r *workflow.Run[AgentState, AgentStatu
 // timeout and retries), so the queue is still intact on the retry. Clearing
 // it afterwards would instead risk answering the same comments twice.
 func (d *Deps) onCommentBatchTimeout(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], now time.Time) (AgentStatus, error) {
+	return d.drainCommentBatches(ctx, r, now, false)
+}
+
+// drainCommentBatches is onCommentBatchTimeout's body, with force to drain
+// units whose window is still open. A reviewer who doesn't want to wait out
+// the window says `/syntropy retry` or `/syntropy prompt <text>`, and those
+// drain immediately rather than queueing behind the timer.
+func (d *Deps) drainCommentBatches(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], now time.Time, force bool) (AgentStatus, error) {
 	status := r.Status
 
 	units := make([]string, 0, len(r.Object.PendingNotes))
@@ -2267,7 +2325,7 @@ func (d *Deps) onCommentBatchTimeout(ctx context.Context, r *workflow.Run[AgentS
 			delete(r.Object.PendingNotes, unitID)
 			continue
 		}
-		if unitBatchDeadline(notes).After(now) {
+		if !force && unitBatchDeadline(notes).After(now) {
 			continue // still collecting
 		}
 		mr, ok := r.Object.InFlight[unitID]

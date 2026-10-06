@@ -287,6 +287,14 @@ func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 			fmt.Sprintf("🔄 Cleared pause per @%s. Retrying work on `%s`.", ev.Author.Handle, r.Object.CurrentUnit))
 		return StatusWorking, nil
 	}
+	// Comments already queued for a batched turn are the review feedback the
+	// author would otherwise be asked to re-post, so drain them now rather
+	// than waiting out the window (ADR-0118).
+	if len(r.Object.PendingNotes) > 0 {
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
+			fmt.Sprintf("🔄 Cleared pause per @%s. Starting on the queued review comments now.", ev.Author.Handle))
+		return d.drainCommentBatches(ctx, r, time.Now(), true)
+	}
 	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("🔄 Cleared pause per @%s. Re-comment your last review feedback or wait for CI to rerun to retry the underlying operation.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil
@@ -303,6 +311,14 @@ func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentS
 		return r.Status, nil
 	}
 	r.Object.PromptInjection = args
+	// An explicit instruction is a "do it now" signal: if comments are
+	// already queued, drain them with this prompt attached instead of
+	// leaving the author waiting out the batching window (ADR-0118).
+	if r.Status == StatusAwaitingMerge && len(r.Object.PendingNotes) > 0 {
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
+			fmt.Sprintf("📝 Recorded prompt from @%s and starting on the queued review comments now:\n```\n%s\n```", ev.Author.Handle, args))
+		return d.drainCommentBatches(ctx, r, time.Now(), true)
+	}
 	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("📝 Recorded prompt from @%s. Will inject into the next subagent call:\n```\n%s\n```", ev.Author.Handle, args))
 	return r.Status, nil
@@ -339,6 +355,13 @@ func buildStatusComment(r *workflow.Run[AgentState, AgentStatus]) string {
 	}
 	if r.Object.PromptInjection != "" {
 		fmt.Fprintf(&b, "- Pending prompt injection: yes\n")
+	}
+	// Explain the wait: without this, a reviewer who has just commented sees
+	// a Run that looks idle and has no way to know a batched turn is due
+	// (ADR-0118).
+	if queued, deadline, ok := pendingCommentSummary(r.Object); ok {
+		fmt.Fprintf(&b, "- Review comments queued: %d, starting ~%s UTC (reply `/syntropy retry` to start now)\n",
+			queued, deadline.UTC().Format("15:04"))
 	}
 	return b.String()
 }
@@ -409,4 +432,17 @@ func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, Agen
 	instruction, _ := matchControlPrefix(ev.Note.Body)
 	r.Object.PromptInjection = instruction
 	return d.invokeForEvent(ctx, r, unitID, ev, nil)
+}
+
+// pendingCommentSummary reports how many review comments are waiting across
+// all units and when the first batch is due to drain.
+func pendingCommentSummary(s *AgentState) (queued int, deadline time.Time, ok bool) {
+	for _, notes := range s.PendingNotes {
+		queued += len(notes)
+	}
+	if queued == 0 {
+		return 0, time.Time{}, false
+	}
+	deadline, ok = nextCommentBatchDeadline(s)
+	return queued, deadline, ok
 }

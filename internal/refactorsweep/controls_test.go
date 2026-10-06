@@ -3,6 +3,7 @@ package refactorsweep
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewwormald/syntropy/internal/provider"
 	"github.com/andrewwormald/syntropy/internal/runner"
@@ -390,7 +391,7 @@ func TestPromptInjection_ConsumedByNextRunnerCall(t *testing.T) {
 		Author: provider.User{Handle: "reviewer"},
 		Note:   provider.Note{Body: "please rename"},
 	}
-	d.resume(t.Context(), r, payloadOf(t, ev))
+	d.resumeAndDrain(t, r, ev)
 
 	if len(fr.calls) != 1 {
 		t.Fatalf("want 1 runner call, got %d", len(fr.calls))
@@ -535,5 +536,65 @@ func TestNonAuthor_ControlComment_FallsThrough(t *testing.T) {
 	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
 	if next == StatusPaused {
 		t.Errorf("non-author /syntropy should not pause; got %v", next)
+	}
+}
+
+// `/syntropy retry` is the escape hatch for a reviewer who doesn't want to
+// wait out the batching window: it drains the queue there and then instead
+// of asking them to re-post their feedback (ADR-0118).
+func TestCmdRetry_DrainsQueuedCommentsImmediately(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "done"}}
+	d.withRunner(t, fr)
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {{
+			Note:       provider.Note{ID: 1, Body: "rename Foo", DiscussionID: "d1"},
+			Author:     provider.User{Handle: "reviewer"},
+			ReceivedAt: time.Now(),
+		}},
+	}
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "andreww"}, IsAuthor: true,
+		Note: provider.Note{ID: 2, Body: "/syntropy retry", DiscussionID: "d2"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge after draining, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("/syntropy retry should drain the queue now, got %d runner calls", len(fr.calls))
+	}
+	if len(r.Object.PendingNotes["u"]) != 0 {
+		t.Errorf("the queue should be empty after an explicit retry; got %+v", r.Object.PendingNotes)
+	}
+}
+
+// /syntropy status has to explain the wait, or a reviewer who just commented
+// sees a Run that looks idle with no indication a turn is coming.
+func TestBuildStatusComment_ReportsQueuedComments(t *testing.T) {
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+	r.Object.PendingNotes = map[string][]PendingNote{
+		"u": {
+			{Note: provider.Note{ID: 1}, ReceivedAt: time.Now()},
+			{Note: provider.Note{ID: 2}, ReceivedAt: time.Now()},
+		},
+	}
+
+	got := buildStatusComment(r)
+
+	if !strings.Contains(got, "Review comments queued: 2") {
+		t.Errorf("status should report the queued comment count; got:\n%s", got)
+	}
+	if !strings.Contains(got, "/syntropy retry") {
+		t.Errorf("status should say how to start the turn early; got:\n%s", got)
 	}
 }
