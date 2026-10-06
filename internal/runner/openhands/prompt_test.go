@@ -103,3 +103,18 @@ func TestBuildPrompt_DecisionProtocol_Present(t *testing.T) {
 		}
 	}
 }
+
+// openhands.decisionProtocol mirrors claude's, so it has to carry the same
+// summary word limit (ADR-0119) — otherwise the cap silently depends on
+// which runner the Run happens to use.
+func TestDecisionProtocol_CarriesTheSummaryWordLimit(t *testing.T) {
+	for _, want := range []string{
+		"60 words or fewer",
+		"90 words",
+		"don't count toward the limit",
+	} {
+		if !strings.Contains(decisionProtocol, want) {
+			t.Errorf("decisionProtocol missing %q", want)
+		}
+	}
+}

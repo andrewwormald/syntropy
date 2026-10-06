@@ -1265,6 +1265,55 @@ func formatCommentBatch(notes []PendingNote) string {
 	return b.String()
 }
 
+// maxSummaryWords is the backstop for how much prose a runner summary may
+// contribute to an MR comment (ADR-0119). The prompt asks for 60 words; this
+// sits at the top of the allowed range, so a summary is only ever cut when
+// the limit was ignored outright rather than merely stretched.
+const maxSummaryWords = 90
+
+// clampSummary truncates a runner summary to maxWords words of prose.
+//
+// Fenced code blocks pass through whole and don't count: the budget is about
+// how much reading a reviewer is asked to do, and a diff or a snippet is the
+// part they actually want. An unterminated fence therefore swallows the rest
+// of the summary uncounted — a malformed summary is passed through rather
+// than mangled.
+//
+// Returns s unchanged when nothing was cut, so the common case is
+// byte-for-byte what the runner wrote. A truncated comment is a signal worth
+// noticing, not a feature: it means the runner ignored its word limit.
+func clampSummary(s string, maxWords int) string {
+	if maxWords <= 0 {
+		return s
+	}
+	var kept []string
+	var words int
+	var inFence bool
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			kept = append(kept, line)
+			continue
+		}
+		if inFence {
+			kept = append(kept, line)
+			continue
+		}
+		fields := strings.Fields(line)
+		if words+len(fields) <= maxWords {
+			words += len(fields)
+			kept = append(kept, line)
+			continue
+		}
+		// This line crosses the budget: keep the words that fit and stop.
+		if keep := maxWords - words; keep > 0 {
+			kept = append(kept, strings.Join(fields[:keep], " "))
+		}
+		return strings.TrimRight(strings.Join(kept, "\n"), "\n") + " … _(truncated)_"
+	}
+	return s
+}
+
 // isOwnEcho reports whether an inbound note is one the daemon itself
 // posted recently. Called at the top of resume() to short-circuit the
 // self-comment loop before any filter, control-verb parsing, or runner
@@ -1803,6 +1852,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			return StatusPaused, nil
 		}
 
+		// postedSummary is what reviewers read; resp.Summary stays intact for
+		// the Run's own state (PauseReason, plan remainder, Turn history),
+		// where truncating would lose information nobody is reading in a
+		// comment thread (ADR-0119).
+		postedSummary := clampSummary(resp.Summary, maxSummaryWords)
+
 		switch resp.Decision {
 		case DecisionDone, DecisionContinue:
 			// DecisionContinue here means the same thing ADR-0045 gave it in
@@ -1844,7 +1899,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				// the reviewer can clarify if needed. Resolve the thread anyway
 				// (the comment was answered, even if not via code).
 				replyToAllThreads(ctx, r, p, mr, notes,
-					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, postedSummary))
 				resolveAllThreads(ctx, r, p, mr, notes)
 				return StatusAwaitingMerge, nil
 			}
@@ -1893,7 +1948,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 					// stay AwaitingMerge. Do NOT pause — the runner addressing
 					// a comment verbally (without code change) is normal.
 					replyToAllThreads(ctx, r, p, mr, notes,
-						fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+						fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, postedSummary))
 					// Resolve so the threads don't sit open and block
 					// auto-merge; a failed resolve is reported, not dropped.
 					resolveAllThreads(ctx, r, p, mr, notes)
@@ -1922,9 +1977,9 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// can see whether the runner's summary matches what was actually pushed.
 			var addressedBody string
 			if isDone {
-				addressedBody = fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
+				addressedBody = fmt.Sprintf("✓ Addressed (%s): %s", phase, postedSummary)
 			} else {
-				addressedBody = fmt.Sprintf("🔄 Partial progress (%s): %s\n\nMore work is needed — comment again (or reply `/syntropy prompt <text>`) to continue.", phase, resp.Summary)
+				addressedBody = fmt.Sprintf("🔄 Partial progress (%s): %s\n\nMore work is needed — comment again (or reply `/syntropy prompt <text>`) to continue.", phase, postedSummary)
 			}
 			if d.Git != nil {
 				if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, baseBranch); sErr == nil && stat != "" {
@@ -1968,7 +2023,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// a human never asked for, unlike a one-off comment.
 			if ev.Kind == provider.EventNoteAdded {
 				replyToAllThreads(ctx, r, p, mr, notes,
-					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, postedSummary))
 				resolveAllThreads(ctx, r, p, mr, notes)
 			}
 			return StatusAwaitingMerge, nil
@@ -1982,7 +2037,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			d.discardStrayWork(ctx, req.Worktree)
 			r.Object.PauseReason = resp.Summary
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
-				fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
+				fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, postedSummary))
 			return StatusPaused, nil
 		case DecisionRetryCI:
 			// Runner judged this CI failure transient/infra noise (ADR-0068) —
@@ -1999,7 +2054,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if count > maxCIRetries {
 				r.Object.PauseReason = fmt.Sprintf("CI failure retried %d times without resolving (%s): %s", maxCIRetries, phase, resp.Summary)
 				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
-					fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, resp.Summary))
+					fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, postedSummary))
 				return StatusPaused, nil
 			}
 			for _, job := range ev.Pipeline.FailedJobs {
@@ -2011,7 +2066,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				}
 			}
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, primaryDiscussionID,
-				fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, resp.Summary))
+				fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, postedSummary))
 			return StatusAwaitingMerge, nil
 		}
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unhandled decision %v", resp.Decision)
