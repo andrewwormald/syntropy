@@ -666,6 +666,18 @@ func buildPlanningPrompt(s *AgentState) string {
 
 Decide the next increment toward implementing this spec.
 
+If the spec has a "Planned increments" section, that list IS the plan — it was
+written and reviewed by a human before this Run started. Propose the next line
+on it that hasn't shipped yet, and make that line's scope this increment's
+scope. One line = one MR. Do not bundle two lines into one increment, do not
+invent scope that isn't on the list, and re-order lines only where the spec
+itself states a dependency. When every line has shipped and the spec is
+implemented, return Done.
+
+If the spec has no such section, keep each increment to a single coherent
+change that a reviewer can read, test, and merge on its own. An increment that
+would touch unrelated concerns is two increments.
+
 Do not propose an increment that duplicates a blacklisted unit above unless
 its Reason no longer applies (e.g. it was blacklisted for a cause that's
 since been fixed) — an explicit human rejection must not be silently

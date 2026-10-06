@@ -1835,6 +1835,44 @@ func TestBuildPlanningPrompt_InstructsAgainstReproposingBlacklisted(t *testing.T
 	}
 }
 
+// TestBuildPlanningPrompt_TreatsIncrementListAsAuthoritative guards the
+// sizing rule from ADR-0117. The syntropy skill already makes every spec
+// carry a "Planned increments" section — one reviewed line per MR — but the
+// planner was never told the list existed, let alone that it was binding, so
+// it re-derived the next increment from the whole spec body each cycle and
+// could bundle several lines into one oversized MR. Found live: a user
+// reported MRs reaching 30+ update rounds, which only happens when the
+// increment is too big to review in one pass.
+func TestBuildPlanningPrompt_TreatsIncrementListAsAuthoritative(t *testing.T) {
+	s := &AgentState{Goal: "Multi-item spec"}
+
+	prompt := buildPlanningPrompt(s)
+
+	for _, want := range []string{
+		`"Planned increments" section, that list IS the plan`,
+		"One line = one MR.",
+		"Do not bundle two lines into one increment",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("planning prompt missing increment-list rule; want to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
+// A spec written without a "Planned increments" section must still get a
+// sizing rule — otherwise the fix only helps specs the skill authored, and
+// hand-written or legacy specs keep producing oversized increments.
+func TestBuildPlanningPrompt_SizesIncrementsWithoutAList(t *testing.T) {
+	s := &AgentState{Goal: "Spec with no increment list"}
+
+	prompt := buildPlanningPrompt(s)
+
+	want := "keep each increment to a single coherent"
+	if !strings.Contains(prompt, want) {
+		t.Errorf("planning prompt missing the no-list sizing fallback; want to contain %q, got:\n%s", want, prompt)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the
