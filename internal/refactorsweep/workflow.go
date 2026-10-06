@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -148,6 +149,20 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		},
 		d.onAbandonConfirmTimeout,
 		StatusAwaitingMerge,
+	)
+
+	// Comment batching (ADR-0118). Review comments collect in
+	// AgentState.PendingNotes and are drained by ONE runner turn once they
+	// have been quiet for commentBatchWindow. The timer is attached to
+	// StatusAwaitingMerge because that is where an in-flight MR sits while
+	// reviewers comment on it; with an empty queue the TimerFunc returns the
+	// zero time and the library creates no timeout at all, so a Run nobody
+	// is commenting on carries no timer.
+	b.AddTimeout(StatusAwaitingMerge,
+		commentBatchTimer,
+		d.onCommentBatchTimeout,
+		StatusAwaitingMerge, // drained, still waiting for the merge
+		StatusPaused,        // a batched turn asked, failed, or hit a git error
 	)
 
 	// A step auto-paused by PauseAfterErrCount trips a Dead Letter Queue, but
@@ -1986,6 +2001,19 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 }
 
+// commentBatchWindow is how long a unit's queued review comments must stay
+// quiet before they are drained into one runner turn (ADR-0118). Chosen to
+// cover a normal review pass — a reviewer working down a diff leaves comments
+// seconds to a couple of minutes apart — while still answering a lone
+// drive-by comment promptly.
+const commentBatchWindow = 3 * time.Minute
+
+// maxCommentBatchDelay bounds the sliding window: however long a reviewer
+// keeps commenting, work starts this long after the FIRST queued comment.
+// Without it, someone commenting every two minutes could defer the turn
+// indefinitely, and the earliest commenter would wait forever for an answer.
+const maxCommentBatchDelay = 15 * time.Minute
+
 // maxCIRetries caps how many consecutive DecisionRetryCI outcomes
 // invokeForEvent will act on per unit before giving up and pausing for a
 // human (ADR-0068).
@@ -2156,6 +2184,125 @@ func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentStat
 			"ℹ️ Activity detected during the abandon confirmation window — abandon cancelled; watching for events again.")
 	}
 	return StatusAwaitingMerge
+}
+
+// unitBatchDeadline returns when a unit's queued comments should be drained:
+// the later of them has been quiet for commentBatchWindow, or the earlier of
+// them has waited maxCommentBatchDelay — whichever comes first.
+//
+// A note with a zero ReceivedAt yields a deadline in the distant past and so
+// drains on the next tick. That is the intended fallback: an un-timestamped
+// note is a bug, and answering it immediately is better than holding it.
+func unitBatchDeadline(notes []PendingNote) time.Time {
+	earliest, latest := notes[0].ReceivedAt, notes[0].ReceivedAt
+	for _, n := range notes[1:] {
+		if n.ReceivedAt.Before(earliest) {
+			earliest = n.ReceivedAt
+		}
+		if n.ReceivedAt.After(latest) {
+			latest = n.ReceivedAt
+		}
+	}
+	quiet := latest.Add(commentBatchWindow)
+	if hard := earliest.Add(maxCommentBatchDelay); hard.Before(quiet) {
+		return hard
+	}
+	return quiet
+}
+
+// nextCommentBatchDeadline returns the earliest deadline across every unit
+// with queued comments, and false when nothing is queued.
+func nextCommentBatchDeadline(s *AgentState) (time.Time, bool) {
+	var next time.Time
+	for _, notes := range s.PendingNotes {
+		if len(notes) == 0 {
+			continue
+		}
+		d := unitBatchDeadline(notes)
+		if next.IsZero() || d.Before(next) {
+			next = d
+		}
+	}
+	return next, !next.IsZero()
+}
+
+// commentBatchTimer schedules the next drain. Returning the zero time tells
+// the library not to create a timeout at all (see workflow's TimerFunc doc),
+// which is the common case: most Runs in AwaitingMerge have no queued
+// comments.
+//
+// This runs again on every store while the Run is in AwaitingMerge, and the
+// timeout store does not deduplicate, so a unit collecting several comments
+// will accumulate several timeout rows with near-identical deadlines. That is
+// harmless by design: onCommentBatchTimeout is idempotent, so the first row
+// to fire drains the queue and the rest find nothing to do.
+func commentBatchTimer(_ context.Context, r *workflow.Run[AgentState, AgentStatus], _ time.Time) (time.Time, error) {
+	deadline, ok := nextCommentBatchDeadline(r.Object)
+	if !ok {
+		return time.Time{}, nil
+	}
+	return deadline, nil
+}
+
+// onCommentBatchTimeout drains every unit whose comment window has closed,
+// one batched runner turn each. Units whose window is still open are left
+// alone — a single timeout row can fire while another unit is mid-window.
+//
+// Draining before the runner call is deliberate: if invokeForEvent returns an
+// error, nothing here is stored (the library discards the record on a failed
+// timeout and retries), so the queue is still intact on the retry. Clearing
+// it afterwards would instead risk answering the same comments twice.
+func (d *Deps) onCommentBatchTimeout(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], now time.Time) (AgentStatus, error) {
+	status := r.Status
+
+	units := make([]string, 0, len(r.Object.PendingNotes))
+	for unitID := range r.Object.PendingNotes {
+		units = append(units, unitID)
+	}
+	sort.Strings(units) // deterministic order when several units are due
+
+	for _, unitID := range units {
+		notes := r.Object.PendingNotes[unitID]
+		if len(notes) == 0 {
+			delete(r.Object.PendingNotes, unitID)
+			continue
+		}
+		if unitBatchDeadline(notes).After(now) {
+			continue // still collecting
+		}
+		mr, ok := r.Object.InFlight[unitID]
+		if !ok {
+			// Merged, closed or abandoned while the window was open. There is
+			// no MR left to comment on, so drop the queue rather than running
+			// a turn against a unit the Run no longer tracks.
+			delete(r.Object.PendingNotes, unitID)
+			continue
+		}
+		delete(r.Object.PendingNotes, unitID)
+
+		// Synthesise the representative event from the first queued comment.
+		// invokeForEvent reads ev for the MR, the kind and the phase; the
+		// per-comment detail all comes from the batch.
+		ev := provider.Event{
+			Kind:      provider.EventNoteAdded,
+			ProjectID: mr.ProjectID,
+			MR:        mr,
+			Author:    notes[0].Author,
+			IsAuthor:  notes[0].IsAuthor,
+			Note:      notes[0].Note,
+		}
+		next, err := d.invokeForEvent(ctx, r, unitID, ev, notes)
+		if err != nil {
+			return status, err
+		}
+		if next != StatusAwaitingMerge {
+			// A pause outranks the other units' outcomes: the Run needs a
+			// human either way, and anything still queued waits for the
+			// resume rather than being silently dropped.
+			status = next
+		}
+	}
+	return status, nil
 }
 
 // onAbandonConfirmTimeout fires 12h after the /syntropy abandon was

@@ -114,6 +114,14 @@ type AgentState struct {
 	// maxCIRetries before invokeForEvent gives up and pauses for a human.
 	CIRetryCounts map[string]int `json:"ci_retry_counts,omitempty"`
 
+	// PendingNotes holds, per in-flight unit ID, the review comments waiting
+	// for a batched address_comment turn. A reviewer's comments collect here
+	// for commentBatchWindow of quiet and are then answered by ONE runner
+	// turn and one push, instead of one turn and one push per comment —
+	// which is how in-flight MRs reached 30+ update rounds. Durable, so a
+	// daemon restart mid-window loses no comment.
+	PendingNotes map[string][]PendingNote `json:"pending_notes,omitempty"`
+
 	// Counters for the "is learning working?" signal (DESIGN.md open question 1):
 	EventsSeen           int `json:"events_seen"`
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
