@@ -1,6 +1,6 @@
 # ADR-0003: Single long-lived daemon, not cron-driven ticks
 
-**Status**: Accepted
+**Status**: Superseded by [ADR-0117](0117-syntropy-as-a-skill-with-bundled-scripts.md)
 **Date**: 2026-06-15
 
 ## Context
