@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake curl for update tests. Serves $FAKE/release.json, skill.tgz, skill.sha.
+out=""; url=""
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift;; -H|-m) shift;; -*) ;; *) url=$1;; esac; shift; done
+echo "$url" >> "$FAKE/curl.log"
+case $url in
+  */releases/latest) [ -f "$FAKE/release.json" ] || exit 22; cat "$FAKE/release.json";;
+  *.tar.gz) cp "$FAKE/skill.tgz" "$out";;
+  *.sha256) cp "$FAKE/skill.sha" "$out";;
+  *) exit 22;;
+esac

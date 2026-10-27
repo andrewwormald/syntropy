@@ -7,28 +7,12 @@ on:
     branches: [main]
 
 jobs:
-  build-test:
-    name: build + test + vet
+  skill:
+    name: skill tests + shellcheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          check-latest: true
-
-      - name: go build (main module)
-        run: go build ./...
-
-      - name: go test -race (main module)
-        run: go test ./... -race
-
-      - name: go vet (main module)
-        run: go vet ./...
-
-      - name: _v0 archived module — build + test
-        working-directory: _v0
-        run: |
-          go build ./...
-          go test ./...
+      - name: shellcheck
+        run: shellcheck -S warning -e SC2034,SC2164 skills/syntropy/scripts/*.sh install.sh
+      - name: offline tests
+        run: bash skills/syntropy/tests/run-tests.sh

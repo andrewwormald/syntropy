@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+in=$(cat); if grep -q 'curl' <<<"$in"; then echo '<risk-verdict>dangerous: runs a command</risk-verdict>'; else echo '<risk-verdict>safe: plain review</risk-verdict>'; fi
