@@ -2,7 +2,7 @@
 
 ## 1. Offline (safe, no network, ~20s)
     bash <skill-dir>/tests/run-tests.sh
-Fake `glab`, fake `curl`, local bare git remote. Covers update check, `--apply`, `install.sh`. Expect `passed=70 failed=0`.
+Fake `glab`, fake `curl`, local bare git remote. Covers update check, `--apply`, `install.sh`. Expect `passed=78 failed=0`.
 Needs `git`, `jq`. Run it after any script change.
 
 ## 2. Live end-to-end (GitHub)

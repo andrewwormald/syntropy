@@ -2,7 +2,7 @@
 # End-to-end tests against a fake glab + a local bare git remote.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); S="$here/../scripts"
-T=$(mktemp -d); export SYN_NO_UPDATE_CHECK=1 FAKE="$T/fake" SYN_HOME="$T/home" SYN_POLL=0 PATH="$here/stubs:$PATH" TMPDIR="$T"
+T=$(mktemp -d); export SYN_QUIET=0 SYN_NO_UPDATE_CHECK=1 FAKE="$T/fake" SYN_HOME="$T/home" SYN_POLL=0 PATH="$here/stubs:$PATH" TMPDIR="$T"
 mkdir -p "$FAKE"; pass=0; fail=0
 ok() { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "  ok   $1"; else fail=$((fail+1)); echo "  FAIL $1: got [$2] want [$3]"; fi; }
 has() { if grep -q -- "$3" <<<"$2"; then pass=$((pass+1)); echo "  ok   $1"; else fail=$((fail+1)); echo "  FAIL $1: [$2] lacks [$3]"; fi; }
@@ -102,9 +102,9 @@ disc "[{\"id\":\"d9\",\"notes\":[{\"id\":21,\"system\":false,\"resolved\":true,\
 A=$(cd "$T/repo" && "$S/syn-adopt.sh" https://gitlab.com/g/p/-/merge_requests/7 2>"$T/adopt.err"); cat "$T/adopt.err" >&2; ok "adopt run id length" ${#A} 8
 ok "adopt mode" "$(jq -r .mode "$SYN_HOME/runs/$A/state.json")" adopt
 ok "adopt checks out MR branch" "$(cat "$SYN_HOME/runs/$A/worktree/f.txt")" f1
-out=$("$S/syn-wait.sh" "$A" 60); ok "existing unresolved comment delivered" "$(jq -r '.items[0].body' <<<"$out")" "please add a test"
-ok "resolved comment skipped" "$(jq '.items|length' <<<"$out")" 1
 out=$("$S/syn-wait.sh" "$A" 60); ok "existing red CI delivered" "$(jq -r .event <<<"$out")" ci_failed
+ok "existing unresolved comment rides along" "$(jq -r '.items[0].body' <<<"$out")" "please add a test"
+ok "resolved comment skipped" "$(jq '.items|length' <<<"$out")" 1
 echo t > "$SYN_HOME/runs/$A/worktree/t.txt"
 has "adopt push to MR branch" "$("$S/syn-push.sh" "$A" "test: add" 2>&1)" PUSHED
 ok "branch on origin has commit" "$(git -C "$T/origin.git" log feature/x --format=%s | head -1)" "test: add"
@@ -144,5 +144,25 @@ has "symlinked skill refuses apply" "$("$T/inst2/syntropy/scripts/syn-update.sh"
 rm -rf "$T/inst3"; SYN_RELEASE_API=http://fake/repos/x bash "$here/../../../install.sh" --dir "$T/inst3" >/dev/null; ok "install.sh installs latest" "$(cat "$T/inst3/syntropy/VERSION")" v0.2.0
 ok "install.sh content" "$(cat "$T/inst3/syntropy/SKILL.md")" "# new skill"
 echo "$T" >/dev/null; export SYN_NO_UPDATE_CHECK=1
+
+echo "comment batching + length cap"
+mr opened false ""; disc "[]"
+B=$(cd "$T/repo" && "$S/syn-adopt.sh" https://gitlab.com/g/p/-/merge_requests/7 --new-only 2>/dev/null)
+d2() { disc "[{\"id\":\"b1\",\"notes\":[$1]}]"; }
+( SYN_QUIET=4 SYN_POLL=1 "$S/syn-wait.sh" "$B" 60 > "$T/batch.out" ) &
+bp=$!; sleep 1.5; d2 "$(note 31 bob 'first fix this')"; sleep 2; d2 "$(note 31 bob 'first fix this'),$(note 32 bob 'and also that')"; wait $bp
+ok "batch: one event" "$(jq -r .event "$T/batch.out")" comments
+ok "batch: both comments in it" "$(jq '.items|length' "$T/batch.out")" 2
+d2 "$(note 31 bob x),$(note 32 bob x),$(note 33 andrew '/syntropy status')"
+t0=$SECONDS; out=$(SYN_QUIET=60 SYN_POLL=1 "$S/syn-wait.sh" "$B" 60); ok "author command flushes at once" "$(jq -r '.items[0].verb' <<<"$out")" status
+[ $((SECONDS-t0)) -lt 20 ] && ok "flush did not wait for quiet window" 1 1 || ok "flush did not wait for quiet window" slow fast
+: > "$FAKE/posted.log"
+{ echo '```'; echo "code line one"; echo '```'; for i in $(seq 1 120); do printf 'w%s ' $i; done; echo; } | "$S/syn-say.sh" "$B" >/dev/null
+has "long comment cut" "$(cat "$FAKE/posted.log")" "[...cut: comment over 90 words]"
+has "code fence kept whole" "$(cat "$FAKE/posted.log")" "code line one"
+ok "prose capped at 90 words" "$(grep -oE 'w[0-9]+' "$FAKE/posted.log" | wc -l | tr -d ' ')" 90
+: > "$FAKE/posted.log"; echo "short reply" | "$S/syn-say.sh" "$B" >/dev/null
+ok "short comment untouched" "$(head -1 "$FAKE/posted.log")" "short reply"
+"$S/syn-cleanup.sh" "$B" >/dev/null
 
 echo; echo "passed=$pass failed=$fail"; [ $fail = 0 ]

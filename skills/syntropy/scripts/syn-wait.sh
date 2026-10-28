@@ -3,12 +3,16 @@
 # ONE JSON line and exits 0. Run it in the background; you wake on exit.
 # Usage: syn-wait.sh <run> [max-seconds=14400]
 # Events: merged | closed | comments | ci_failed | conflict | pause | timeout
+# Comments batch: they collect until SYN_QUIET seconds (default 180) pass with no
+# new one, capped at SYN_QUIET_MAX (900) after the first. One turn answers them all.
+# An author /syntropy command flushes at once. Any other event carries pending items.
 . "$(dirname "$0")/lib.sh"; need jq
 load_run "${1:?run}"; MAXS=${2:-14400}; POLL=${SYN_POLL:-30}
 [ -n "$MR" ] || die "run $RUN has no open MR; run syn-open.sh first"
 author=$(st_get "$RUN" .author); errs=0; t0=$SECONDS
-emit() { jq -nc --arg e "$1" --arg r "${2:-}" '{event:$e}+(if $r!="" then {reason:$r} else {} end)'; exit 0; }
-emit_json() { jq -nc --arg e "$1" --argjson d "$2" '{event:$e}+$d'; exit 0; }
+QUIET=${SYN_QUIET:-180}; QMAX=${SYN_QUIET_MAX:-900}; pending='[]'; first_at=0; last_at=0
+emit() { jq -nc --arg e "$1" --arg r "${2:-}" --argjson p "$pending" '{event:$e}+(if $r!="" then {reason:$r} else {} end)+(if ($p|length)>0 then {items:$p} else {} end)'; exit 0; }
+emit_json() { jq -nc --arg e "$1" --argjson d "$2" --argjson p "$pending" '{event:$e}+(if ($p|length)>0 then {items:$p} else {} end)+$d'; exit 0; }
 
 while :; do
   if ! s=$(pf mr_state "$MR" 2>/dev/null); then
@@ -56,7 +60,11 @@ while :; do
         fi
       fi
     done < <(jq -c '.[]' <<<"$new")
-    [ "$(jq length <<<"$items")" -gt 0 ] && emit_json comments "$(jq -nc --argjson i "$items" '{items:$i}')"
+    if [ "$(jq length <<<"$items")" -gt 0 ]; then
+      pending=$(jq -c --argjson i "$items" '.+$i' <<<"$pending")
+      [ "$first_at" -gt 0 ] || first_at=$SECONDS; last_at=$SECONDS
+      [ "$(jq '[.[]|select(.type=="control")]|length' <<<"$items")" -gt 0 ] && emit_json comments '{}'   # author command: flush now
+    fi
   fi
 
   # --- merge conflict
@@ -81,6 +89,10 @@ while :; do
     fi
   fi
 
+  # --- flush the comment batch once the reviewers go quiet
+  if [ "$(jq length <<<"$pending")" -gt 0 ] && { [ $((SECONDS-last_at)) -ge "$QUIET" ] || [ $((SECONDS-first_at)) -ge "$QMAX" ]; }; then
+    emit_json comments '{}'
+  fi
   [ $((SECONDS-t0)) -ge "$MAXS" ] && emit timeout
   sleep "$POLL"
 done

@@ -165,5 +165,6 @@ forces or unlocks.
 | 0114 | `syntropy config check` preflights OpenHands' undeclared runtime dependencies (tmux, libtmux, openhands-tools) | Accepted | 2026-09-14 |
 | 0115 | Every "handled it" reply resolves the thread, and a failed resolve is reported (supersedes ADR-0066's Done-only resolution) | Accepted | 2026-10-02 |
 | 0117 | syntropy is a skill with bundled scripts; the Go daemon is removed (supersedes ADR-0002, ADR-0003) | Accepted | 2026-10-27 |
+| 0118 | Port comment batching, the summary cap, and the increment-list rule to the skill | Accepted | 2026-10-28 |
 
 For the operator how-to that puts ADR-0112/ADR-0113 into practice — the opt-in flag, OS runtime dependencies, daemon flags/env vars, and the LiteLLM model-prefix requirement — see [README.md § Enabling OpenHands (opt-in)](../README.md#enabling-openhands-opt-in).
