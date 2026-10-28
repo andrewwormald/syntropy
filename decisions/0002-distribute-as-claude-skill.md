@@ -1,6 +1,6 @@
 # ADR-0002: Distribute as a Claude Code Skill + Go binary
 
-**Status**: Accepted
+**Status**: Superseded by [ADR-0117](0117-syntropy-as-a-skill-with-bundled-scripts.md)
 **Date**: 2026-06-15
 
 ## Context

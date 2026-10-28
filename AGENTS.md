@@ -1,117 +1,51 @@
 # Agent guide
 
-Instructions for AI agents (Claude Code, Codex, OpenHands, ...) working in this
-repository. Read this first before making changes.
+Instructions for AI agents working in this repository.
 
-## Read these before contributing
+## What this repo is
 
-1. **[README.md](README.md)** — what syntropy is and what works today
-2. **[DESIGN.md](DESIGN.md)** — full architecture and roadmap
-3. **[decisions/](decisions/)** — every meaningful decision and its rationale. Read the index, then any ADRs touching the area you're changing.
+An agent skill: `skills/syntropy/` (`SKILL.md` + `scripts/` + `tests/`), an installer (`install.sh`), and a decisions log (`decisions/`). There is no Go code. The old Go daemon is in git history at tag `daemon-final`.
 
-The repo is dogfooded for "long-running AI agent loops" — it should be readable
-and contributable *by an agent*. The decisions log is the primary mechanism for
-that; it captures context that isn't visible in the code alone.
+Read first: [README.md](README.md), then [ADR-0117](decisions/0117-syntropy-as-a-skill-with-bundled-scripts.md).
 
 ## Working rules
 
 ### Decisions get ADRs
 
-Every meaningful decision is captured as an Architecture Decision Record under
-`decisions/`. "Meaningful" means: it would surprise someone reading the code,
-it locks out alternatives, or it would be re-litigated without a written
-record. Examples:
+A decision gets an ADR under `decisions/` if it would surprise a reader, locks out alternatives, or would be re-litigated. Use the template in [`decisions/README.md`](decisions/README.md). Number it as the next unused 4-digit integer. Update the index. If it supersedes an ADR, mark the old one `Superseded by ADR-NNNN`.
 
-- Picking a primitive (workflow library, runner shape, IPC mechanism)
-- Scope decisions (what's in v1, what's deferred)
-- Naming/structural choices that affect contributors
-- Tradeoffs where the alternatives were close
-
-Trivial decisions (variable naming, gofmt-fixable nits, choosing one of several
-equally good standard-library options) do *not* need ADRs.
-
-When writing an ADR:
-
-1. Number it as the next unused integer, 4-digit zero-padded (`0013-...`).
-2. Use the template in [`decisions/README.md`](decisions/README.md).
-3. Update the index in `decisions/README.md`.
-4. If superseding a prior ADR, mark the old one `Superseded by ADR-NNNN` and link.
+ADRs 0001–0116 describe the daemon. They stay as history. Do not rewrite them.
 
 ### Code rules
 
-- Run `go vet ./...` and `go build ./...` before committing.
-- Before committing, run `go test ./...` and `(cd _v0 && go test ./...)` to verify both modules build cleanly.
-- No `_test.go` for the PoC unless you're adding new behavior worth covering.
-- Don't add dependencies casually. Workflow (durable state) and `k8s.io/utils/clock` (clock injection) are the only required ones today.
-- Keep `main.go` small. Anything reusable goes in a focused file (`runner.go`, `worktree.go`, ...).
-- Single-line comments only unless the *why* genuinely needs more.
+- Scripts are bash with `set -euo pipefail`. Match the style in `scripts/lib.sh`.
+- Run before committing:
+  - `bash skills/syntropy/tests/run-tests.sh`
+  - `shellcheck -S warning -e SC2034,SC2164 skills/syntropy/scripts/*.sh install.sh`
+- Add a test in `tests/run-tests.sh` for every new behavior. Use the fake `glab` / `curl` stubs. No test may touch the network.
+- Keep `SKILL.md` short. The agent reads it on every load. Put code in scripts, not in `SKILL.md`.
+- Do not add dependencies beyond `git`, `jq`, `curl`, `tar`, `shasum`, and `gh`/`glab`.
+- Single-line comments unless the *why* needs more.
+- No Makefile. Put commands in this file.
 
-### Don't do these without explicit human approval
+### Do not do these without explicit human approval
 
-- Force-push to `main`
-- Add a runtime dependency on a hosted service
-- Re-introduce the `Plan/Act/Observe/Reflect` step graph (see [ADR-0010](decisions/0010-simplified-step-graph.md) for why this was collapsed)
-- Modify `LICENSE`
+- Force-push to `main`.
+- Make a script write or delete outside `~/.syntropy` and the run's worktree.
+- Let a script run text from an MR comment.
+- Modify `LICENSE`.
 
 ### Commit hygiene
 
 - One logical change per commit.
-- Commit message subject describes intent, not just diff (`docs: record ADR-0013 on sqlite store choice`, not `add file`).
+- The subject says intent (`feat(adopt): refuse fork MRs`), not just the diff.
 - Co-author trailer when an AI agent contributed.
+- Do not name real people in ADRs, docs, or commits. Use roles.
 
-## How to find context
+## Releasing
 
-| Question | Where to look |
-|---|---|
-| Why was X chosen? | `decisions/` — grep title or read the index |
-| What does Y do? | Source comments; if missing, the code itself |
-| What's planned but not built? | `DESIGN.md` (vision) + open ADRs marked `Proposed` |
-| How do I run this? | `README.md` |
-| What's the L1/L2/L3 mapping? | `DESIGN.md` § *L1/L2/L3 → workflow mapping* |
+Push a tag `vX.Y.Z`. `.github/workflows/release.yml` tests, packages, and publishes the skill archive with its checksum. The in-skill update check reads the latest release, so a tag is a release to every user. Get approval before tagging.
 
-## Troubleshooting
+## Live testing
 
-### Build and test commands
-
-```bash
-# Build
-go build ./...
-
-# Vet
-go vet ./...
-
-# Test
-go test ./...
-
-# Both modules (main + _v0 scaffold)
-go test ./... && (cd _v0 && go test ./...)
-```
-
-### Common problems
-
-**Daemon won't start — "open store: ..."**  
-SQLite parent directory doesn't exist. The daemon creates `~/.syntropy/` automatically with the default `--store` flag. For a custom path, ensure the parent directory exists.
-
-**`syntropy start` — "POST .../trigger: connection refused"**  
-The daemon isn't running. Start it with `syntropy daemon` in a separate terminal.
-
-**Run stuck in `Paused` — `/syntropy status` shows a budget pause reason**  
-A budget cap fired (`MaxUnits`, `MaxTokens`, or `MaxRuntime`). The run is paused and won't auto-resume. Inspect with `syntropy status <run-id>`. To continue, stop the run and start a new one with a higher budget cap.
-
-**Run stuck in `Paused` — no budget reason**  
-The runner returned `Ask` or `Fail`, or the author issued `/syntropy pause`. Look at `PauseReason` in `syntropy status <run-id>`. Reply `/syntropy resume` (MR comment or CLI) to clear it.
-
-**Poller not picking up MR comments**  
-Check the daemon logs for `"poller: auth failure; backing off"`. If present, the provider token expired. Rotate the token (set `GITLAB_TOKEN`/`GITHUB_TOKEN` env var or re-run `glab auth login` / `gh auth login`) and restart the daemon. The poller backs off exponentially (30s → 2m → 8m → 32m → 2h) to avoid hammering an invalid token.
-
-**`syntropy status` — "run not found"**  
-The run ID is wrong, or the store path used by the daemon differs from the one the CLI would default to. Confirm with `--daemon` flag pointing at the correct local address, or query the store directly.
-
-**Runner returns Done but MR has no changes**  
-The hallucination guard in `work()` detects this: `HasChanges` is checked after a `Done` decision. If the worktree is clean, the unit is blacklisted with reason "runner returned Done with no changes" and the run proceeds to the next unit. Check the `Blacklisted` count in `syntropy status <run-id>`.
-
-**`go build` fails with "unknown field ... in struct literal"**  
-A field was removed from `AgentState`. Old SQLite records containing the field will unmarshal fine (JSON is forward-compatible). If a *new* required field was added without a zero default, add `omitempty` and a safe zero value.
-
-**Webhook events not firing / all events going to wrong runs**  
-The in-memory `SecretRegistry` is rebuilt from durable state on daemon start (`rehydrateSecrets`). If a run was created before the daemon's last restart, its secret is rehydrated automatically. If not (e.g. the store was replaced), old webhook registrations are orphaned — close the MRs manually, stop the run, and restart.
+See `skills/syntropy/TESTING.md`. Use a private scratch repo. Never a real or work repo.

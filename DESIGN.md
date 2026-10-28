@@ -1,3 +1,5 @@
+> **Archived.** This document describes the Go daemon, removed in [ADR-0117](decisions/0117-syntropy-as-a-skill-with-bundled-scripts.md). The last daemon commit is tagged `daemon-final`. Kept for history.
+
 # Syntropy — design
 
 **Status**: Active design. The v1 baseline ships under `internal/` (refactor-sweep workflow, sqlite store, GitLab + GitHub providers, poller, webhook server) and ADRs 0031-0034 have landed on top of it. Every load-bearing decision in this doc links to an ADR under [`decisions/`](decisions/).

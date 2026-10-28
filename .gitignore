@@ -1,13 +1,6 @@
-# compiled binaries
-/everflow
-/dist/
-
 # local test artifacts
 /tmp/
-/workspace/
-*.test
-coverage.out
-cover.out
+/dist/
 
 # editor
 .idea/
@@ -16,4 +9,7 @@ cover.out
 
 # OS
 .DS_Store
-_v0/everflow-v0
+
+# legacy daemon binary
+/everflow
+/_v0/

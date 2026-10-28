@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Minimal fake GitLab API for syntropy tests. State lives in $FAKE.
+[ "$1" = api ] || exit 2; shift
+method=GET; path=""; input=0
+while [ $# -gt 0 ]; do case $1 in -X) method=$2; shift;; --input) input=1; shift;; --paginate|-H) [ "$1" = -H ] && shift;; *) path=$1;; esac; shift; done
+body=""; [ $input = 1 ] && body=$(cat)
+echo "$method $path" >> "$FAKE/calls.log"
+case "$method $path" in
+  "GET user") echo '{"username":"andrew"}';;
+  "GET projects/g%2Fp/merge_requests?state=opened&source_branch="*) [ -f "$FAKE/created" ] && echo '[{"iid":7}]' || echo '[]';;
+  "POST projects/g%2Fp/merge_requests") touch "$FAKE/created"; echo "$body" > "$FAKE/created.json"; echo '{"iid":7,"web_url":"http://x/7"}';;
+  "GET projects/g%2Fp/merge_requests/7") cat "$FAKE/mr.json";;
+  "GET projects/g%2Fp/merge_requests/7/discussions"*) cat "$FAKE/discussions.json";;
+  "POST projects/g%2Fp/merge_requests/7/notes") jq -r .body <<<"$body" >> "$FAKE/posted.log";;
+  "PUT projects/g%2Fp/merge_requests/7/discussions/"*) echo "resolved ${path##*/}" >> "$FAKE/resolved.log";;
+  "POST projects/g%2Fp/pipelines/55/retry") echo retry >> "$FAKE/retries.log";;
+  "GET projects/g%2Fp/pipelines/55/jobs"*) echo '[{"id":99}]';;
+  "GET projects/g%2Fp/jobs/99/trace") cat "$FAKE/trace.txt";;
+  "PUT projects/g%2Fp/merge_requests/7") echo closed >> "$FAKE/closed.log";;
+  *) echo "unhandled: $method $path" >&2; exit 1;;
+esac

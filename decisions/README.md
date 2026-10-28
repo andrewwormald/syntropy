@@ -4,6 +4,8 @@ A log of every meaningful decision made in this repo. The goal is
 **agentifiability**: an AI agent should be able to read this directory and
 have the same context a senior contributor would.
 
+> ADRs 0001–0116 describe the Go daemon, removed by [ADR-0117](0117-syntropy-as-a-skill-with-bundled-scripts.md). They stay as history. The last daemon commit is tagged `daemon-final`.
+
 ## Format
 
 Each ADR is a numbered markdown file:
@@ -49,8 +51,8 @@ forces or unlocks.
 | #    | Title                                              | Status   | Date       |
 |------|----------------------------------------------------|----------|------------|
 | 0001 | Everflow is an orchestrator, not a Claude replacement | Accepted | 2026-06-15 |
-| 0002 | Distribute as a Claude Code Skill + Go binary      | Accepted | 2026-06-15 |
-| 0003 | Single long-lived daemon, not cron-driven ticks    | Accepted | 2026-06-15 |
+| 0002 | Distribute as a Claude Code Skill + Go binary      | Superseded by ADR-0117 | 2026-06-15 |
+| 0003 | Single long-lived daemon, not cron-driven ticks    | Superseded by ADR-0117 | 2026-06-15 |
 | 0004 | Shell out to `claude -p`, not the Anthropic SDK    | Accepted | 2026-06-15 |
 | 0005 | Context lives in the workflow Run, not in the runner | Accepted | 2026-06-15 |
 | 0006 | One git worktree per Run                           | Accepted | 2026-06-15 |
@@ -162,5 +164,6 @@ forces or unlocks.
 | 0113 | OpenHands Agent Server — five schema corrections from a local spike (amends ADR-0112) | Accepted | 2026-09-07 |
 | 0114 | `syntropy config check` preflights OpenHands' undeclared runtime dependencies (tmux, libtmux, openhands-tools) | Accepted | 2026-09-14 |
 | 0115 | Every "handled it" reply resolves the thread, and a failed resolve is reported (supersedes ADR-0066's Done-only resolution) | Accepted | 2026-10-02 |
+| 0117 | syntropy is a skill with bundled scripts; the Go daemon is removed (supersedes ADR-0002, ADR-0003) | Accepted | 2026-10-27 |
 
 For the operator how-to that puts ADR-0112/ADR-0113 into practice — the opt-in flag, OS runtime dependencies, daemon flags/env vars, and the LiteLLM model-prefix requirement — see [README.md § Enabling OpenHands (opt-in)](../README.md#enabling-openhands-opt-in).
