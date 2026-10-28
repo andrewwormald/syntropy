@@ -22,7 +22,7 @@ else
   rel=$(curl -fsSL "$API/releases/latest"); v=$(jq -r .tag_name <<<"$rel")
   u=$(jq -r '.assets[]|select(.name=="syntropy-skill.tar.gz")|.browser_download_url' <<<"$rel")
   c=$(jq -r '.assets[]|select(.name=="syntropy-skill.tar.gz.sha256")|.browser_download_url' <<<"$rel")
-  [ -n "$u" ] && [ -n "$c" ] || { echo "release $v has no skill assets" >&2; exit 1; }
+  [ -n "$u" ] && [ -n "$c" ] || { echo "release $v has no skill archive. Use --ref main, or wait for a skill release." >&2; exit 1; }
   curl -fsSL -o "$tmp/s.tgz" "$u"; curl -fsSL -o "$tmp/s.sha" "$c"
   [ "$(awk '{print $1}' "$tmp/s.sha")" = "$(shasum -a 256 "$tmp/s.tgz" | awk '{print $1}')" ] || { echo "checksum mismatch. Nothing changed." >&2; exit 1; }
   tar -xzf "$tmp/s.tgz" -C "$tmp/x"

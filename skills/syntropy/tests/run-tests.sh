@@ -121,9 +121,14 @@ ok "next ends adopt run" "$("$S/syn-next.sh" "$A" merged | jq -r .status)" done
 echo "update / install"
 SK="$here/.."; mkdir -p "$T/pkg/syntropy" "$T/inst"; echo "# new skill" > "$T/pkg/syntropy/SKILL.md"
 tar -C "$T/pkg" -czf "$FAKE/skill.tgz" syntropy; shasum -a 256 "$FAKE/skill.tgz" | sed 's#  .*#  syntropy-skill.tar.gz#' > "$FAKE/skill.sha"
+relold() { jq -nc --arg t "$1" '{tag_name:$t,assets:[{name:"syntropy_0.2.0_darwin_arm64.tar.gz",browser_download_url:"http://fake/x"}]}' > "$FAKE/release.json"; }
 rel() { jq -nc --arg t "$1" '{tag_name:$t,assets:[{name:"syntropy-skill.tar.gz",browser_download_url:"http://fake/syntropy-skill.tar.gz"},{name:"syntropy-skill.tar.gz.sha256",browser_download_url:"http://fake/syntropy-skill.tar.gz.sha256"}]}' > "$FAKE/release.json"; }
 cp -R "$SK" "$T/inst/syntropy"; echo v0.1.0 > "$T/inst/syntropy/VERSION"; U="$T/inst/syntropy/scripts/syn-update.sh"
 export SYN_RELEASE_API=http://fake/repos/x; unset SYN_NO_UPDATE_CHECK; : > "$FAKE/curl.log"
+relold v0.2.0; rm -f "$SYN_HOME/update.json"; ok "old binary release is ignored" "$("$U")" ""
+ok "cache holds no tag for old release" "$(jq -r .latest "$SYN_HOME/update.json")" ""
+ok "skill VERSION is newer than the last binary release" "$([ "$(printf 'v0.2.0\n%s\n' "$(cat "$SK/VERSION")" | sort -V | tail -1)" = "$(cat "$SK/VERSION")" ] && echo yes)" yes
+echo v0.1.0 > "$T/inst/syntropy/VERSION"; rm -f "$SYN_HOME/update.json"
 rel v0.1.0; ok "up to date is silent" "$("$U")" ""
 rm -f "$SYN_HOME/update.json"; rel v0.2.0; has "newer release prints one line" "$("$U")" "v0.2.0 (you have v0.1.0)"
 n=$(wc -l < "$FAKE/curl.log" | tr -d " "); "$U" >/dev/null; ok "second check uses 24h cache" "$(wc -l < "$FAKE/curl.log" | tr -d ' ')" "$n"
