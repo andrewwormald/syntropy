@@ -26,8 +26,8 @@ if [ "${1:-}" != --apply ]; then
     latest=$(jq -r '.latest // ""' "$cache" 2>/dev/null || true)
   else
     rel=$(fetch_release 2>/dev/null) || exit 0                      # offline or API error: stay silent
-    latest=$(jq -r '.tag_name // ""' <<<"$rel" 2>/dev/null) || exit 0
-    [ -n "$latest" ] || exit 0
+    # Only a release that carries the skill archive counts. Old binary releases do not.
+    latest=$(jq -r 'select(any(.assets[]?; .name=="syntropy-skill.tar.gz")) | .tag_name // ""' <<<"$rel" 2>/dev/null) || exit 0
     mkdir -p "$SYN_HOME" && jq -n --arg l "$latest" --argjson t "$now" '{latest:$l,checked_at:$t}' > "$cache" 2>/dev/null || true
   fi
   is_newer "$cur" "$latest" && echo "A newer syntropy skill is available: $latest (you have $cur). Update: $dir/scripts/syn-update.sh --apply" || true
