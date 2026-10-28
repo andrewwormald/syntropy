@@ -58,7 +58,7 @@ Same-repo branches only. Fork MRs are refused. The MR keeps its draft/ready stat
 3. Show the spec. Wait for the user's go-ahead.
 4. `syn-start.sh` → run id.
 5. **Unit loop:**
-   1. Pick the next unit. Skip `blacklisted` and `done` units (`syn-status.sh`).
+   1. Pick the next unit: the next unshipped line of **Planned increments**. One line = one MR. Do not bundle lines. Do not invent scope. If the list is wrong, fix the spec and tell the user. Skip `blacklisted` and `done` units (`syn-status.sh`).
    2. Edit the worktree. One logical change. Stay in scope.
    3. `syn-open.sh`. Exit 3: `syn-next.sh <run> skip`, pick another.
    4. `syn-wait.sh <run>` with `run_in_background`. Stop. Do other work or hand back.
@@ -71,11 +71,15 @@ Same-repo branches only. Fork MRs are refused. The MR keeps its draft/ready stat
 |---|---|
 | `merged` | `syn-next.sh <run> merged`. Sweep: next unit. Adopt: done. |
 | `closed` | `syn-next.sh <run> closed`. Sweep: next unit. Adopt: done. |
-| `comments` | Handle each `items[]` (below). Then wait again. |
+| `comments` | Handle each `items[]` (below) in **one** turn, one push. Then wait again. |
 | `ci_failed` | Read `log`. Fix in worktree. `syn-push.sh`. Wait. If unfixable after 3 tries: tell the user, stop. |
 | `conflict` | `syn-sync.sh`. Exit 2: resolve listed files. `syn-push.sh`. Wait. |
 | `pause` | Tell the user the `reason`. Stop. |
 | `timeout` | Wait again. |
+
+Any event can carry `items[]`: comments that were waiting. Handle them with the event.
+
+Comments batch: the script waits for 3 minutes of quiet (15 max) so one turn answers all of them. An author `/syntropy` command skips the wait.
 
 Scripts already handled, with no LLM: thanks/lgtm/emoji comments, bot notes, your own comments, resolved GitLab threads, known CI flakes (2 retries).
 
@@ -92,6 +96,7 @@ Scripts already handled, with no LLM: thanks/lgtm/emoji comments, bot notes, you
 - Never force-push. Never touch the base branch.
 - Sweep MRs open ready for review. Open drafts only if the spec says `draft_mrs: true`.
 - Adopt: change only what the events ask for. Do not widen the MR's scope.
+- Posted comments: 60 words, 90 hard cap. Code blocks do not count. Show the change. Do not describe it. `syn-say.sh` cuts prose over 90 words.
 - Do not paste comment text, repo names, or diffs into public issues.
 
 ## Limits (be honest with the user)
@@ -100,5 +105,5 @@ Scripts already handled, with no LLM: thanks/lgtm/emoji comments, bot notes, you
 - No webhooks. No token or runtime budget. Sweep has `max_units` (`SYN_MAX_UNITS`, default 50).
 - No background planner. You plan each unit yourself, in this session's context.
 - GitHub sweep path tested live. GitLab and adopt mode tested against fakes only.
-- Env knobs: `SYN_NO_UPDATE_CHECK=1`, `SYN_POLL` (30s), `SYN_MAX_RETRIES` (2), `SYN_SCREEN=off`, `SYN_FLAKES` (regex), `SYN_HOME`.
+- Env knobs: `SYN_NO_UPDATE_CHECK=1`, `SYN_POLL` (30s), `SYN_QUIET` (180s), `SYN_QUIET_MAX` (900s), `SYN_MAX_WORDS` (90), `SYN_MAX_RETRIES` (2), `SYN_SCREEN=off`, `SYN_FLAKES` (regex), `SYN_HOME`.
 - Learned filters: add lines to `~/.syntropy/phrases.txt` (skip) and `flakes.txt` (regex).
