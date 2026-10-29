@@ -30,7 +30,7 @@ You do the thinking. Scripts do the waiting, polling, and bookkeeping.
 | `S/syn-open.sh <run> <unit> "<title>" <<<desc` | Sweep. Commit, push, open MR (ready; draft if spec opts in). Exit 3 = no changes. |
 | `S/syn-wait.sh <run>` | **Background.** Prints one JSON event, exits. |
 | `S/syn-say.sh <run> [--resolve <thread>] <<<text` | Comment on MR. Resolve thread. |
-| `S/syn-push.sh <run> "<msg>"` | Commit + push to the MR branch. No force. Merges human pushes. |
+| `S/syn-push.sh <run> "<msg>"` | Commit + push to the MR branch. No force. Merges human pushes and retries (3x). Exit 2 = merge conflicts: resolve, run again. Exit 4 = refused (protected branch, auth, hook): tell the user. |
 | `S/syn-sync.sh <run>` | Merge base. Exit 2 = conflicts listed. |
 | `S/syn-ctl.sh <run> <verb> [args]` | Run an author command. No LLM. |
 | `S/syn-next.sh <run> merged\|closed\|skip` | Record outcome. Sweep: reset worktree. Adopt: end run. |

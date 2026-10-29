@@ -118,6 +118,30 @@ ok "MR not closed" "$(cat "$FAKE/closed.log" 2>/dev/null | wc -l | tr -d ' ')" 0
 ok "next ends adopt run" "$("$S/syn-next.sh" "$A" merged | jq -r .status)" done
 "$S/syn-cleanup.sh" "$A" >/dev/null; ok "adopt branch deleted" "$(git -C "$T/repo" branch --list "syn/$A/*" | wc -l | tr -d ' ')" 0
 
+echo "push: remote moved"
+mr opened false ""; disc "[]"
+R3=$(cd "$T/repo" && "$S/syn-adopt.sh" https://gitlab.com/g/p/-/merge_requests/7 --new-only 2>/dev/null)
+echo r1 > "$SYN_HOME/runs/$R3/worktree/r1.txt"
+# Hook: first push attempt loses a race. A human pushes just before ours lands.
+git -C "$T/repo" config core.hooksPath "$T/repo/.git/hooks"   # a global hooksPath would hide it
+cat > "$T/repo/.git/hooks/pre-push" <<HOOK
+#!/usr/bin/env bash
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+[ -f "$T/race" ] || exit 0
+rm "$T/race"; d=\$(mktemp -d); git clone -q "$T/origin.git" "\$d/c" 2>/dev/null
+( cd "\$d/c" && git checkout -q feature/x && git config user.email h@h && git config user.name h && echo racer > racer.txt && git add . && git commit -qm racer && git push -q origin feature/x ) >/dev/null 2>&1
+exit 0
+HOOK
+chmod +x "$T/repo/.git/hooks/pre-push"; touch "$T/race"
+out=$("$S/syn-push.sh" "$R3" "fix: r1" 2>&1); has "race: push retried and landed" "$out" PUSHED
+ok "race: human commit kept" "$(git -C "$T/origin.git" ls-tree -r --name-only feature/x | grep -c racer.txt)" 1
+ok "race: our commit landed" "$(git -C "$T/origin.git" ls-tree -r --name-only feature/x | grep -c r1.txt)" 1
+ok "race: history not rewritten" "$(git -C "$T/origin.git" log feature/x --format=%s | grep -c 'fix: r1')" 1
+echo r2 > "$SYN_HOME/runs/$R3/worktree/r2.txt"
+printf '#!/bin/sh\necho "pre-receive hook declined" >&2\nexit 1\n' > "$T/repo/.git/hooks/pre-push"
+out=$("$S/syn-push.sh" "$R3" "fix: r2" 2>&1); ok "other refusal exits 4" $? 4; has "other refusal says why" "$out" PUSH_REFUSED
+rm -f "$T/repo/.git/hooks/pre-push"; "$S/syn-cleanup.sh" "$R3" >/dev/null
+
 echo "update / install"
 SK="$here/.."; mkdir -p "$T/pkg/syntropy" "$T/inst"; echo "# new skill" > "$T/pkg/syntropy/SKILL.md"
 tar -C "$T/pkg" -czf "$FAKE/skill.tgz" syntropy; shasum -a 256 "$FAKE/skill.tgz" | sed 's#  .*#  syntropy-skill.tar.gz#' > "$FAKE/skill.sha"
