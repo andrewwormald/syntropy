@@ -24,6 +24,11 @@ Waiting for review costs tokens if the agent polls. The scripts poll instead. Th
 
 Scripts also filter comments before the agent sees them: thanks/lgtm/emoji, bots, its own comments, known CI flakes. Comments from people other than you go through a risk screen first. A flagged comment never reaches the agent.
 
+Two more things the scripts handle:
+
+- **Comments batch.** The script waits for 3 minutes of quiet after a review comment (15 at most). The agent then answers all of them in one turn and one push. An author `/syntropy` command skips the wait. `SYN_QUIET=0` turns batching off.
+- **Pushes survive other people.** If someone pushes to the branch, the agent merges their work and retries. It never force-pushes. Merge conflicts and refused pushes (protected branch, auth) go back to the agent or to you.
+
 ## Install
 
 ```bash
