@@ -24,11 +24,11 @@ You do the thinking. Scripts do the waiting, polling, and bookkeeping.
 
 | Script | Use |
 |---|---|
-| `S/syn-check.sh <repo>` | Config check. Exit 1 = ask the user for the title convention. |
+| `S/syn-check.sh <repo-path>` | Config check. Use `.` in the clone. Exit 1 = ask the user for the title convention. |
 | `S/syn-start.sh <spec.md>` | **Sweep.** Create Run + worktree. Prints run id. |
 | `S/syn-adopt.sh <url\|number> [--new-only]` | **Adopt.** Run inside the clone. Prints run id. |
 | `S/syn-open.sh <run> <unit> "<title>" <<<desc` | Sweep. Commit, push, open MR (ready; draft if spec opts in). Exit 3 = no changes. |
-| `S/syn-wait.sh <run>` | **Background.** Prints one JSON event, exits. |
+| `S/syn-wait.sh <run> [max-seconds]` | **Background.** Prints one JSON event, exits. Default max 14400 (4h), then `timeout`. macOS has no `timeout` command: use this argument. |
 | `S/syn-say.sh <run> [--resolve <thread>] <<<text` | Comment on MR. Resolve thread. |
 | `S/syn-push.sh <run> "<msg>"` | Commit + push to the MR branch. No force. Merges human pushes and retries (3x). Exit 2 = merge conflicts: resolve, run again. Exit 4 = refused (protected branch, auth, hook): tell the user. |
 | `S/syn-sync.sh <run>` | Merge base. Exit 2 = conflicts listed. |
@@ -49,12 +49,26 @@ Worktree: `~/.syntropy/runs/<run>/worktree`. Edit files there.
 3. Handle each event (table below). Fix in the worktree. `syn-push.sh`. Wait again.
 4. `merged` or `closed`: `syn-next.sh <run> merged`. Run ends. `syn-cleanup.sh`.
 
-Same-repo branches only. Fork MRs are refused. The MR keeps its draft/ready state. `skip` is refused: it must never close the user's MR.
+Same-repo branches only. Fork MRs are refused. The MR keeps its draft/ready state. `syn-ctl.sh skip` is refused: it must never close the user's MR. `syn-next.sh <run> merged|closed|skip` only ends the run. It never changes the MR.
 
 ## Sweep flow
 
 1. `syn-check.sh <repo>`. Exit 0: go on. Exit 1: ask the user once, then write `title_convention:` in `<repo>/.syntropy.yml` (`blank` if declined).
-2. Write the spec (frontmatter: `goal`, `provider`, `project`, `base_branch`, `base_repo`, optional `draft_mrs: true`). Body must have **Planned increments**: one numbered line per MR, 18 words max.
+2. Write the spec. Body must have **Planned increments**: one numbered line per MR, 18 words max.
+   ```
+   ---
+   goal: Rename Foo to Bar
+   provider: github          # or gitlab
+   project: owner/repo
+   base_repo: /path/to/clone
+   base_branch: main
+   draft_mrs: true           # optional. Default: ready for review
+   ---
+   ## Planned increments
+   1. Rename Foo in package a.
+   2. Rename Foo in package b.
+   ```
+   Unit id (for `syn-open.sh`): a short slug of the line, like `pkg-a`. It names the branch `syn/<run>/<slug>`.
 3. Show the spec. Wait for the user's go-ahead.
 4. `syn-start.sh` → run id.
 5. **Unit loop:**

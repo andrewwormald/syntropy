@@ -10,7 +10,8 @@ case $verb in
   pause)  st_upd "$RUN" '.paused=true'; say "Paused. Reply \`/syntropy resume\` to continue."; echo "NEXT=stop";;
   resume) st_upd "$RUN" '.paused=false'; say "Resumed."; echo "NEXT=wait";;
   stop)   st_upd "$RUN" '.status="stopped"'; say "Stopped. The MR stays open."; echo "NEXT=stop";;
-  status) say "$(jq -r '"Run \(.id): \(.done|length) merged, \(.blacklisted|length) skipped, unit \(.unit), paused=\(.paused)."' "$(st_file "$RUN")")"; echo "NEXT=wait";;
+  status) line=$(jq -r '"Run \(.id): \(.done|length) merged, \(.blacklisted|length) skipped, unit \(.unit), paused=\(.paused)."' "$(st_file "$RUN")")
+          say "$line"; echo "$line"; echo "NEXT=wait";;
   retry)  ref=$(pf mr_state "$MR" | jq -r .ci_ref); [ -n "$ref" ] && pf retry_ci "$MR" "$ref"
           st_upd "$RUN" '.ci_handled=[]'; say "Retrying CI."; echo "NEXT=wait";;
   skip)   if [ "$(st_get "$RUN" .mode)" = adopt ]; then echo "skip does not apply to an adopted MR. Use stop."; echo "NEXT=wait"; exit 0; fi
