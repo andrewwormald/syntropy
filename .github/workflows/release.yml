@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  # Re-publish the assets for a tag whose release already exists.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag, e.g. v0.3.0"
+        required: true
 
 permissions:
   contents: write
@@ -11,18 +17,28 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - name: offline tests
         run: bash skills/syntropy/tests/run-tests.sh
       - name: package skill
         run: |
           mkdir -p dist/syntropy
           cp -R skills/syntropy/. dist/syntropy/
-          echo "${GITHUB_REF_NAME}" > dist/syntropy/VERSION
+          echo "${TAG}" > dist/syntropy/VERSION
           tar -C dist -czf syntropy-skill.tar.gz syntropy
           sha256sum syntropy-skill.tar.gz > syntropy-skill.tar.gz.sha256
       - name: publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" syntropy-skill.tar.gz syntropy-skill.tar.gz.sha256 --generate-notes
+        run: |
+          # A release made by hand before the tag build must not fail the job.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" syntropy-skill.tar.gz syntropy-skill.tar.gz.sha256 --clobber
+          else
+            gh release create "${TAG}" syntropy-skill.tar.gz syntropy-skill.tar.gz.sha256 --generate-notes
+          fi

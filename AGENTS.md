@@ -44,7 +44,7 @@ ADRs 0001–0116 describe the daemon. They stay as history. Do not rewrite them.
 
 ## Releasing
 
-Push a tag `vX.Y.Z`. `.github/workflows/release.yml` tests, packages, and publishes the skill archive with its checksum. The in-skill update check reads the latest release, so a tag is a release to every user. Get approval before tagging.
+Push a tag `vX.Y.Z`. `.github/workflows/release.yml` tests, packages, and publishes the skill archive with its checksum. If the release already exists, the workflow uploads the assets to it. To re-publish a tag, run the workflow by hand (`gh workflow run release.yml -f tag=vX.Y.Z`). The in-skill update check reads the latest release, so a tag is a release to every user. Get approval before tagging.
 
 ## Live testing
 
