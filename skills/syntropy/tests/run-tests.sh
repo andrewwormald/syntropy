@@ -27,7 +27,8 @@ SPEC
 echo "check"
 echo 'title_convention: "feat(x): msg"' > "$T/repo/.syntropy.yml"
 out=$("$S/syn-check.sh" "$T/repo"); ok "check exit 0" $? 0; has "check prints convention" "$out" "feat(x): msg"
-rm "$T/repo/.syntropy.yml"; "$S/syn-check.sh" "$T/repo" >/dev/null; ok "check exit 1 when missing" $? 1
+rm "$T/repo/.syntropy.yml"; out=$("$S/syn-check.sh" "$T/repo"); ok "check exit 1 when missing" $? 1; has "check says what is missing" "$out" "MISSING: title_convention"
+"$S/syn-check.sh" "$T/nope" >/dev/null 2>&1; ok "check refuses a non-directory" $? 1
 
 echo "start/open"
 mr opened false ""; disc "[]"
@@ -80,6 +81,7 @@ has "freeform verb = prompt" "$("$S/syn-ctl.sh" "$RUN" please also fix docs)" "G
 ok "prompts stored" "$(jq '.prompts|length' "$SYN_HOME/runs/$RUN/state.json")" 2
 echo "reply" | "$S/syn-say.sh" "$RUN" --resolve d1 >/dev/null; ok "thread resolved" "$(cat "$FAKE/resolved.log")" "resolved d1"
 has "comment has marker" "$(tail -3 "$FAKE/posted.log")" "syntropy"
+has "status prints the status line" "$("$S/syn-ctl.sh" "$RUN" status)" "Run $RUN:"
 "$S/syn-ctl.sh" "$RUN" pause >/dev/null; ok "paused flag" "$(jq -r .paused "$SYN_HOME/runs/$RUN/state.json")" true
 out=$("$S/syn-next.sh" "$RUN" merged); ok "next counts merged" "$(jq .done <<<"$out")" 1
 ok "mr cleared" "$(jq -r '.mr.id // "none"' "$SYN_HOME/runs/$RUN/state.json")" none
